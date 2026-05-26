@@ -1,0 +1,1651 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8"/>
+<title>조사방법론</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{
+  background:#0a0a14;
+  display:flex;align-items:center;justify-content:center;
+  height:100vh;overflow:hidden;
+  font-family:"Malgun Gothic","Apple SD Gothic Neo","Noto Sans KR",sans-serif;
+  color:#e2e8f0;
+}
+#ui{display:flex;gap:12px;align-items:flex-start;}
+#side{width:190px;flex-shrink:0;display:flex;flex-direction:column;gap:10px;}
+.panel{background:rgba(15,23,42,.95);border:2px solid #334155;border-radius:10px;padding:12px;}
+.panel h3{font-size:13px;color:#93c5fd;border-bottom:1px solid #334155;padding-bottom:6px;margin-bottom:8px;text-align:center;letter-spacing:1px;}
+.qitem{display:flex;gap:7px;align-items:flex-start;font-size:12px;color:#64748b;margin-bottom:7px;line-height:1.4;}
+.qitem.done{color:#86efac}.qitem.now{color:#fde68a;font-weight:700}
+.qicon{flex-shrink:0;width:14px;}
+.krow{display:flex;gap:6px;align-items:center;font-size:12px;color:#94a3b8;margin-bottom:6px;}
+kbd{background:#1e293b;border:1px solid #475569;border-radius:3px;padding:1px 5px;font-size:11px;font-family:monospace;color:#e2e8f0;}
+#canvas-wrap{position:relative;}
+canvas{display:block;border:2px solid #1e3a5f;border-radius:4px;box-shadow:0 0 40px rgba(0,80,255,.15);}
+#toast-box{position:absolute;top:10px;right:10px;display:flex;flex-direction:column;gap:5px;pointer-events:none;}
+.toast{background:rgba(20,83,45,.95);border:1px solid #4ade80;border-radius:6px;padding:6px 13px;font-size:12px;color:#f0fdf4;animation:tin .3s ease;max-width:240px;}
+@keyframes tin{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:translateY(0)}}
+</style>
+</head>
+<body>
+  <audio id="bgm" loop></audio>
+<div id="ui">
+  <div id="side">
+    <div class="panel"><h3>📋 퀘스트</h3><div id="qlist"></div></div>
+    <div class="panel">
+      <h3>⌨ 조작</h3>
+      <div class="krow"><kbd>←</kbd><kbd>→</kbd><span>이동</span></div>
+      <div class="krow"><kbd>↑</kbd><span>점프 / 포탈</span></div>
+      <div class="krow"><kbd>Space</kbd><span>상호작용 / 다음 / 선택</span></div>
+      <div class="krow"><kbd>↑</kbd><kbd>↓</kbd><span>선택지 커서</span></div>
+    </div>
+    <div class="panel"><h3>🗺 현재 구역</h3><div id="mapname" style="text-align:center;font-size:13px;color:#fde68a;padding:4px 0;"></div></div>
+  </div>
+  <div id="canvas-wrap">
+    <canvas id="c" width="820" height="500"></canvas>
+    <div id="toast-box"></div>
+  </div>
+</div>
+
+<script>
+  let bgmReady = false;
+let pendingBGM = null;
+
+const bgm = document.getElementById("bgm");
+bgm.volume = 0.4;
+
+function playBGM(src){
+  bgm.pause();
+  bgm.currentTime = 0;
+  bgm.src = src;
+  if(bgmReady){
+    bgm.play().catch(()=>{});
+  } else {
+    pendingBGM = src;
+  }
+}
+
+
+const cv=document.getElementById("c"),cx=cv.getContext("2d");
+const W=820,H=500;
+
+/* ══════ 입력 ══════ */
+const K={};
+let spaceConsumed=false,upConsumed=false;
+window.addEventListener("keydown",e=>{
+ if(!bgmReady){
+  bgmReady = true;
+  if(pendingBGM){
+    bgm.pause();
+    bgm.src = pendingBGM;
+    bgm.play().catch(()=>{});
+  }
+}
+  K[e.key]=true;
+  if(["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"," "].includes(e.key))e.preventDefault();
+  if(e.key===" "&&!spaceConsumed){spaceConsumed=true;onSpace();}
+  if(e.key==="ArrowUp"&&!upConsumed){upConsumed=true;onUp();}
+  if(e.key==="ArrowDown"&&dialog.open&&dialog.choices)
+    choiceIdx=Math.min(dialog.choices.length-1,choiceIdx+1);
+});
+window.addEventListener("keyup",e=>{
+  K[e.key]=false;
+  if(e.key===" ")spaceConsumed=false;
+  if(e.key==="ArrowUp")upConsumed=false;
+});
+
+/* ══════ 씬 ══════ */
+let scene="title";
+let titleT=0,rejectT=0,lastT=0;
+
+/* ══════ 캐릭터 정의 ══════ */
+const CHARS=[
+  {name:"김유미",body:"#9CA3AF",hat:"#3b1c00",hair:"#1a0500",desc:"이주민 예술가의 경험적 특성과 행태, 언어 장벽, 제도 바깥의 삶"},
+  {name:"김용진",body:"#1D4ED8",hat:"#1E293B",hair:"#1a0500",desc:"지역별 연령 특성에 기인한 문화재단 지원 양상."},
+  {name:"이유현",body:"#EC4899",hat:"#1a0500",hair:"#1a0010",desc:"AI 전환(AX) 평가 프레임워크 - 디지털 전환(DX) 프레임워크의 AI 맥락 확장"}
+];
+let charIdx=0,selectedChar=CHARS[0];
+
+/* ══════ 게임 상태 ══════ */
+const state={intro:false,data_intro:false,purposive:false,theoretical:false,saturation:false,submitted:false,deskDone:false};
+let introStoryShown=false;
+const quests=[
+  {t:"① 조교와 대화하기 (복도)",done:false},
+  {t:"② 교수님께 목적표집 배우기",done:false},
+  {t:"③ 도서관에서 이론적 표집 공부",done:false},
+  {t:"④ 이론적 포화 배우기",done:false},
+  {t:"⑤ 교수님과 마지막 대화",done:false},
+  {t:"⑥ 프로포절 제출하기",done:false}
+];
+let libraryBad=false,doorAttempt=0;
+
+/* ══════ 물리 상수 ══════ */
+const G=900,JUMP=-300,SPEED=270;
+
+/* ══════ 플레이어 ══════ */
+const PL={x:100,y:250,vx:0,vy:0,w:28,h:44,onGround:false,frame:0,frameT:0,dir:1};
+
+/* ══════ 교수 (추격) ══════ */
+const PROF={x:-60,y:0,vx:0,vy:0,w:36,h:72,onGround:false,speed:115};
+let profScale=0.7; // 교수 크기 배율 (처음 크다가 점점 작아짐)
+
+/* ══════ 추격전 타이머 ══════ */
+let chaseTimer=0;
+let PROF_CHASE_ACTIVE=false;
+let chasePhase=0;
+// 추격전 안내 일시정지
+let chasePaused=false;
+let chaseWarningMsg="🚨교수님으로 부터 도망치세요🚨";
+
+/* ══════ 드랍 맵 ══════ */
+// 수업 드랍 전용 점프킹 스타일 맵
+let dropPlayerX=100,dropPlayerY=460,dropVY=0,dropVX=0,dropOnGround=false;
+const DROP_G=1000,DROP_JUMP=-230,DROP_SPEED=200;
+
+const DROP_PLATFORMS=[
+  // 바닥
+  {x:0,y:480,w:820,h:20,color:"#3a1a1a"},
+  // 1단계 발판들 (낮음, 쉬움)
+  {x:60,y:440,w:80,h:12,color:"#7a3a3a"},
+  {x:200,y:400,w:20,h:12,color:"#7a3a3a"},
+  {x:330,y:400,w:50,h:12,color:"#8a4040"},
+  {x:480,y:390,w:55,h:12,color:"#8a4040"},
+  {x:630,y:390,w:35,h:12,color:"#9a4a4a"},
+  {x:720,y:355,w:50,h:12,color:"#9a4a4a"},
+  // 2단계 (중간)
+  {x:600,y:315,w:45,h:12,color:"#aa5050"},
+  {x:440,y:305,w:40,h:12,color:"#aa5050"},
+  {x:300,y:320,w:42,h:12,color:"#ba5555"},
+  {x:160,y:305,w:38,h:12,color:"#ba5555"},
+  {x:50,y:280,w:40,h:12,color:"#ca5a5a"},
+  // 3단계 (어려움, 좁음)
+  {x:150,y:240,w:30,h:12,color:"#da6060"},
+  {x:280,y:230,w:15,h:12,color:"#e06565"},
+  {x:380,y:200,w:50,h:12,color:"#e06565"},
+  {x:550,y:200,w:8,h:12,color:"#ea6a6a"},
+  {x:640,y:180,w:13,h:12,color:"#ea6a6a"},
+  // 4단계 (매우 어려움)
+  {x:700,y:140,w:5,h:12,color:"#f07070"},
+  {x:700,y:100,w:5,h:12,color:"#f07070"},
+  {x:630,y:100,w:25,h:12,color:"#f07070"},
+  {x:500,y:130,w:10,h:12,color:"#da6060"},
+  {x:400,y:120,w:8,h:12,color:"#f47575"},
+  // 꼭대기 문 발판
+  {x:230,y:100,w:70,h:14,color:"#ff8888"},
+  {x:100,y:100,w:70,h:14,color:"#ff8888"},
+];
+
+/* ══════ 맵 데이터 ══════ */
+const GROUND_Y=420;
+
+const MAPS={
+  corridor:{
+    name:"📍 복도",
+    bgTop:"#1a1035",bgBot:"#2d1b4e",
+    floor:{y:GROUND_Y,color:"#4a3560"},
+    platforms:[
+      {x:80,y:320,w:100,h:16,color:"#5b4a7a"},
+      {x:250,y:350,w:70,h:14,color:"#5b4a7a"},
+      {x:380,y:280,w:140,h:16,color:"#5b4a7a"},
+      {x:540,y:310,w:80,h:14,color:"#6a558a"},
+      {x:580,y:340,w:120,h:16,color:"#5b4a7a"},
+      {x:680,y:250,w:70,h:14,color:"#6a558a"},
+    ],
+    npcs:[
+      {x:620,y:GROUND_Y-44,w:34,h:44,label:"조사방법론 조교",color:"#7dd3fc",emoji:"👩‍🏫",key:"ta",fn:()=>openTA()}
+    ],
+    portals:[
+      {x:760,y:GROUND_Y-56,w:36,h:56,target:"classroom",spawnX:80,spawnY:GROUND_Y-44,label:"강의실→",color:"#a78bfa",cond:()=>state.intro}
+    ],
+    decos:[
+      {type:"sign",x:60,y:GROUND_Y-80,text:"조사방법론"},
+      {type:"locker",x:300,y:GROUND_Y-90},
+      {type:"locker",x:340,y:GROUND_Y-90},
+      {type:"chalkText", x:75, y:GROUND_Y-40, text:"도..망..쳐....."}
+    ]
+  },
+
+  classroom:{
+    name:"🏫 강의실",
+    bgTop:"#0f1a2e",bgBot:"#1a2d4a",
+    floor:{y:GROUND_Y,color:"#3a4a6a"},
+    platforms:[
+      // 단상
+      {x:320,y:280,w:180,h:16,color:"#2d4a6e",isPodium:true},
+      // 다양한 높이 발판 (더 많고 작게)
+      {x:30,y:370,w:70,h:12,color:"#4a5a8a"},
+      {x:90,y:320,w:55,h:12,color:"#4a5a8a"},
+      {x:220,y:370,w:65,h:12,color:"#4a5a8a"},
+      {x:520,y:330,w:60,h:12,color:"#4a5a8a"},
+      {x:620,y:320,w:70,h:12,color:"#5a6a9a"},
+      {x:720,y:360,w:60,h:12,color:"#4a5a8a"},
+      // 중간 높이
+      {x:70,y:230,w:55,h:12,color:"#3a4a7a"},
+      {x:180,y:270,w:50,h:12,color:"#3a4a7a"},
+      {x:560,y:200,w:60,h:12,color:"#3a4a7a"},
+      {x:690,y:250,w:55,h:12,color:"#3a4a7a"},
+      // 높은 발판
+      {x:190,y:190,w:45,h:12,color:"#2a3a6a"},
+      {x:640,y:160,w:50,h:12,color:"#2a3a6a"},
+    ],
+    npcs:[
+  {x:390,y:280-44,w:34,h:44,label:"김병조 교수님",color:"#fca5a5",emoji:"👨‍🎓",key:"prof",fn:()=>openProf()},
+  {x:120,y:GROUND_Y-44,w:34,h:44,label:"박사과정생",color:"#c4b5fd",emoji:"🥱",key:"phd",fn:()=>openPhD()}
+],
+boards:[
+  {x:630,y:GROUND_Y-340,w:100,h:56,label:"📝 제출\nDesk",color:"#93c5fd",key:"desk",fn:()=>openDesk()}
+    ],
+    portals:[
+      // 왼쪽: 휴학 신청하기 포탈 (항상 열려있음)
+      {x:190,y:GROUND_Y-290,w:30,h:56,target:"drop",spawnX:100,spawnY:460,label:"행정실(휴학 신청)",color:"#f87171",isDrop:true,cond:()=>true},
+      // 오른쪽: 복도
+      {x:790,y:GROUND_Y-60,w:30,h:56,target:"library",spawnX:80,spawnY:GROUND_Y-44,label:"도서관→",color:"#a78bfa",cond:()=>state.purposive}
+    ],
+    decos:[
+      {type:"board",x:260,y:60,w:300,h:60,text:"조사방법론 강의실"},
+      {type:"window",x:20,y:80},
+      {type:"window",x:750,y:80},
+    ]
+  },
+
+  library:{
+    name:"📚 도서관",
+    bgTop:"#1a1200",bgBot:"#2d2000",
+    floor:{y:GROUND_Y,color:"#4a3a1a"},
+    platforms:[
+      {x:30,y:390,w:70,h:12,color:"#6b4e2a"},
+      {x:140,y:365,w:55,h:12,color:"#6b4e2a"},
+      {x:230,y:340,w:60,h:12,color:"#6b4e2a"},
+      {x:350,y:310,w:50,h:12,color:"#7a5a30"},
+      {x:460,y:280,w:55,h:12,color:"#7a5a30"},
+      {x:570,y:250,w:60,h:12,color:"#8a6a38"},
+      {x:680,y:290,w:50,h:12,color:"#7a5a30"},
+      {x:730,y:330,w:55,h:12,color:"#6b4e2a"},
+      {x:100,y:270,w:50,h:12,color:"#5a4020"},
+      {x:210,y:230,w:45,h:12,color:"#5a4020"},
+      {x:600,y:210,w:50,h:12,color:"#5a4020"},
+      {x:720,y:190,w:45,h:12,color:"#5a4020"},
+    ],
+    npcs:[
+      {x:580,y:250-44,w:104,h:134,label:"도서관 근로장학생",color:"#fde68a",emoji:"🕺",key:"libNpc",fn:()=>openLibrary()}
+    ],
+    portals:[
+      {x:0,y:GROUND_Y-56,w:30,h:56,target:"classroom",spawnX:730,spawnY:GROUND_Y-44,label:"←강의실",color:"#818cf8"}
+    ],
+    decos:[
+      {type:"shelf",x:50,y:GROUND_Y-130},
+      {type:"shelf",x:150,y:GROUND_Y-130},
+      {type:"shelf",x:280,y:GROUND_Y-130},
+      {type:"shelf",x:680,y:GROUND_Y-130},
+      {type:"shelf",x:750,y:GROUND_Y-130},
+    ]
+  }
+};
+
+let currentMap="corridor";
+function getMap(){return MAPS[currentMap];}
+
+/* ══════ 대화 ══════ */
+const dialog={open:false,lines:[],idx:0,choices:null,speaker:"",text:""};
+let choiceIdx=0;
+
+function openDialog(lines){
+  dialog.open=true;dialog.lines=lines;dialog.idx=0;
+  dialog.choices=null;choiceIdx=0;
+  dialog.speaker=lines[0]?.speaker??"";
+  dialog.text=lines[0]?.text??"";
+  if(lines[0]?.choices)dialog.choices=lines[0].choices;
+}
+function dlgNext(){
+  const cur=dialog.lines[dialog.idx];
+  if(cur?.onEnd)cur.onEnd();
+  if(dialog.choices)return;
+  dialog.idx++;
+  if(dialog.idx>=dialog.lines.length){dialog.open=false;dialog.choices=null;return;}
+  const n=dialog.lines[dialog.idx];
+  dialog.speaker=n.speaker??"";dialog.text=n.text??"";
+  dialog.choices=n.choices??null;choiceIdx=0;
+}
+function pickChoice(fn){dialog.open=false;dialog.choices=null;fn();}
+
+//* ══════ 스페이스 / 위 키 핸들러 ══════ */
+function onSpace(){
+  if(scene==="title"){scene="charSelect";return;}
+  if(scene==="charSelect"){
+    if(charIdx===1){
+      alert("양적연구로 변절한 연구자입니다.");
+      return;
+    }
+    if(charIdx===2){
+      alert("현생이 바빠 아직 진행할 수 없습니다.....");
+      return;
+    }
+    selectedChar=CHARS[charIdx];scene="game";initGame();return;
+  }
+  if(scene==="reject"){resetGame();return;}
+  if(scene==="drop"){
+    // 드랍 맵에서는 space 없음
+    return;
+  }
+  if(scene==="game"||scene==="ending_dlg"){
+    if(dialog.open){
+      if(dialog.choices)pickChoice(dialog.choices[choiceIdx].fn);
+      else dlgNext();
+    }else{
+      tryInteract();
+    }
+  }
+  if(scene==="chase"){
+    // 추격전 중 안내 대화창 닫기
+    if(chasePaused){
+      chasePaused=false;
+      return;
+    }
+  }
+}
+function onUp(){
+  if(scene==="charSelect"){charIdx=(charIdx+1)%CHARS.length;return;}
+  if(scene==="game"){
+    if(!dialog.open&&tryPortal())return;
+    if(PL.onGround){PL.vy=JUMP;}
+  }
+  if(scene==="chase"){
+    if(!chasePaused&&PROF_CHASE_ACTIVE&&PL.onGround)PL.vy=JUMP;
+  }
+  if(scene==="drop"){
+    if(dropOnGround)dropVY=DROP_JUMP;
+  }
+  if(dialog.open&&dialog.choices)
+    choiceIdx=Math.max(0,choiceIdx-1);
+}
+
+/* ══════ 게임 초기화 ══════ */
+function initGame(){
+  currentMap="corridor";
+  PL.x=80;PL.y=GROUND_Y-44;PL.vx=0;PL.vy=0;
+  PL.onGround=false;
+
+  // 복도(조교) BGM
+  playBGM("모여봐요 조방 - 조교.mp3");
+
+  updateMapUI();
+
+  if(!introStoryShown){
+    introStoryShown=true;
+    openDialog([
+      {speaker:"내레이션",text:"한국에서 활동하는 이주민 예술가들. 그들은 문화다양성을 몸으로 구현하는 사람들이지만, 제도는 여전히 그들을 모른 척한다."},
+      {speaker:"내레이션",text:"당신—김유미-은 그 공백을 연구로 채우기로 했다. 그런데 어디서부터 시작해야 할까?"}
+    ]);
+  }
+}
+
+/* ══════ 맵 이동 ══════ */
+/* ══════ 맵 이동 ══════ */
+function gotoMap(target,spawnX,spawnY){
+  if(target==="__ending__"){
+    scene="ending_dlg";
+    openDialog(T.ending);
+    return;
+  }
+  if(target==="drop"){
+    scene="drop";
+    dropPlayerX=100;dropPlayerY=460;dropVX=0;dropVY=0;dropOnGround=false;
+    dropTimer=60;dropFailed=false;dropFailedT=0;
+    bgm.volume = 0.9;  // 🔊 드랍 맵에서만 볼륨 업
+    playBGM("모여봐요 조방 - drop.mp3");
+    return;
+  }
+  currentMap=target;
+  PL.x=spawnX;PL.y=spawnY;PL.vx=0;PL.vy=0;PL.onGround=false;
+  scene="game";
+  updateMapUI();
+
+  // 맵별 BGM
+  if(target==="corridor"){
+    playBGM("모여봐요 조방 - 조교.mp3");
+  }else if(target==="classroom"){
+    playBGM("모여봐요 조방 - 강의실.mp3");
+  }else if(target==="library"){
+    playBGM("모여봐요 조방 - 도서관.mp3");
+  }
+}
+function tryPortal(){
+  const map=getMap();
+  if(!map.portals)return false;
+  for(const p of map.portals){
+    if(p.cond&&!p.cond())continue;
+    if(overlap(PL,p)){
+      gotoMap(p.target,p.spawnX,p.spawnY);
+      return true;
+    }
+  }
+  return false;
+}
+
+function overlap(a,b){return a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y;}
+function overlapNPC(npc){return Math.abs((PL.x+PL.w/2)-(npc.x+npc.w/2))<50;}
+
+/* ══════ 인터랙션 ══════ */
+function tryInteract(){
+  const map=getMap();
+  if(map.npcs)for(const n of map.npcs)if(overlapNPC(n)){n.fn();return;}
+  if(map.boards)for(const b of map.boards){
+    const cx2=PL.x+PL.w/2;
+    if(cx2>b.x&&cx2<b.x+b.w){b.fn();return;}
+  }
+}
+
+/* ══════ 대본 ══════ */
+const T={
+ taIntro:[
+  {speaker:"유미",text:"안녕하세요 조교님!"},
+  {speaker:"조사방법론 조교",text:"유미학생, 이주민 예술가들의 이야기를 연구한다고 들었어요."},
+  {speaker:"조사방법론 조교",text:"그럼 가장 먼저 물어봐야 할 게 있어요. 어떤 데이터를 모을 건가요?",
+   choices:[
+     {label:"A. 그걸 지금 고민 중이에요. 어떤 데이터가 필요할까요?",fn:()=>openDialog(T.taA)},
+     {label:"B. 너무 복잡해요. 설문조사로 하면 안 될까요?",fn:()=>openDialog(T.taB)}
+   ]}
+],
+
+  taA:[
+    {speaker:"조사방법론 조교",text:"이주민 예술가의 경험은 숫자로 담기 어려워요. 체류자격 문제, 언어 장벽, 제도 바깥의 삶—이런 건 점수로 표현할 수 없거든요. 질적 연구에 맞는 네 가지 데이터를 추천해요."},
+    {speaker:"조사방법론 조교",text:"첫째, 인터뷰예요. 일대일로 직접 대화하며 당사자의 언어로 경험을 듣는 거죠. 둘째, 관찰이에요. 전시 현장, 연습 공간 등에 직접 들어가서 보는 거예요."},
+    {speaker:"조사방법론 조교",text:"셋째, 문서예요. 정책 자료, 법령, 공모사업 공고—제도가 이주민 예술가를 어떻게 다루는지가 담겨 있어요. 넷째, 시청각 자료예요. 사진, 영상 등 아티스트가 직접 만든 결과물들이요."},
+    {speaker:"조사방법론 조교",text:"이 네 가지를 조합해야 그 사람의 경험이 입체적으로 보여요."},
+    {speaker:"유미",text:"그렇군요, 설명해 주셔서 감사합니다!"},
+    {speaker:"조사방법론 조교",text:"데이터의 형태는 이제 알겠죠? 그런데 한 가지 더 중요한 문제가 남아 있어요. 수많은 이주민 예술가 중에서 누구를 만날 건가요?"},
+    {speaker:"유미",text:"헉!....그게 문제네요."},
+    {speaker:"조사방법론 조교",text:"그 질문에 답해줄 사람이 있어요. 강의실에 들어가 김병조 교수님을 찾아가 보세요.",
+     onEnd:()=>{state.intro=true;setQ(0);addToast("✓ 챕터1 완료 → 강의실로 이동");}}
+  ],
+
+  taB:[
+    {speaker:"조사방법론 조교",text:"설문조사는 연구자가 미리 정해둔 틀 안에서 대답을 받는 방식이에요. 그런데 이주민 예술가의 경험은 그 틀 바깥에 있는 경우가 많아요."},
+    {speaker:"조사방법론 조교",text:"예를 들어 '지원사업 신청 경험이 있나요?'라는 질문에 '없다'고 답한 사람이 있다고 해요. 설문이라면 거기서 끝이에요."},
+    {speaker:"조사방법론 조교",text:"하지만 인터뷰라면 물을 수 있어요. '왜 신청하지 않으셨어요? 자격이 안 됐나요, 몰랐나요, 포기했나요?' 그 안에 제도의 공백이 있어요."},
+    {speaker:"조사방법론 조교",text:"그래서 저는 인터뷰를 중심으로, 관찰·문서·시청각 자료를 함께 쓰길 권해요. 그들의 언어로, 그들의 경험을 담는 게 목표니까요."},
+    {speaker:"유미",text:"그렇군요, 설명해 주셔서 감사합니다!"},
+    {speaker:"조사방법론 조교",text:"데이터의 형태는 이제 알겠죠? 그런데 한 가지 더 중요한 문제가 남아 있어요. 수많은 이주민 예술가 중에서 누구를 만날 건가요?"},
+    {speaker:"유미",text:"헉!....그게 문제네요."},
+    {speaker:"조사방법론 조교",text:"그 질문에 답해줄 사람이 있어요. 강의실에 들어가 김병조 교수님을 찾아가 보세요.",
+     onEnd:()=>{state.intro=true;setQ(0);addToast("✓ 챕터1 완료 → 강의실로 이동");}}
+  ],
+
+  profFirst:[
+    {speaker:"유미",text:"실례합니다, 교수님. 이주민 예술가 연구를 시작하려는데요..."},
+    {speaker:"김병조 교수님",text:"반가워요, 유미학생!"},
+    {speaker:"김병조 교수님",text:"이주민 예술가를 연구한다고요. 그럼 누구를 만날 건가요? 어떻게 고를 건가요?",
+     choices:[
+       {label:"A. 무작위로 고르면 안 될까요?",fn:()=>openDialog(T.profA)},
+       {label:"B. 연구 목적에 맞는 사람을 직접 골라야 할 것 같아요.",fn:()=>openDialog(T.profB)}
+     ]}
+  ],
+
+  profA:[
+    {speaker:"김병조 교수님",text:"질적 연구에서 무작위 표집은 대부분 목적에 맞지 않아요. 무작위로 고른 사람이 당신 연구에서 필요한 경험을 가지고 있을 거라는 보장이 없어요."},
+    {speaker:"김병조 교수님",text:"그래서 질적 연구에서는 연구자가 참여자를 직접 선정하는 목적적 표집을 써요.",
+     choices:[
+       {label:"A. 비슷한 경험을 가진 사람들을 집중적으로 만나고 싶어요.",fn:()=>openDialog(T.profDetailA)},
+       {label:"B. 최대한 다양한 사람들을 만나고 싶어요.",fn:()=>openDialog(T.profDetailB)}
+     ]}
+  ],
+
+  profB:[
+    {speaker:"김병조 교수님",text:"맞아요. 그게 바로 목적적 표집이에요. 연구 목적에 맞게 연구자가 직접 판단해서 참여자를 고르는 방식이죠. 중요한 건 '왜 이 사람을 선택했는가' 그 이유를 투명하게 설명할 수 있어야 해요.",
+     choices:[
+       {label:"A. 비슷한 경험을 가진 사람들을 집중적으로 만나고 싶어요.",fn:()=>openDialog(T.profDetailA)},
+       {label:"B. 최대한 다양한 사람들을 만나고 싶어요.",fn:()=>openDialog(T.profDetailB)}
+     ]}
+  ],
+
+  profDetailA:[
+    {speaker:"김병조 교수님",text:"그건 동질 사례 표집이에요. 공통 특성을 공유하는 집단을 집중적으로 보는 방식이죠. 예를 들어 이주예술가 중 E-6 비자 소지 공연예술가만 집중적으로 만나는 거예요."},
+    {speaker:"김병조 교수님",text:"반면에 최대 변동 사례 표집도 있어요. 이질적인 사례들을 의도적으로 포함하는 방식이죠. 체류자격도, 예술 장르도 다양하게 고르는 거예요. 다양한 맥락에서 공통적으로 나타나는 패턴이 있다면, 그게 훨씬 설득력 있는 정책 함의를 만들어내거든요."},
+    {speaker:"김병조 교수님",text:"그런데 이주민 예술가는 접근하기 쉬운 집단이 아니에요. 커뮤니티가 폐쇄적이고, 체류 문제로 노출을 꺼리는 경우도 많죠. 그럴 땐 눈덩이 표집을 함께 써요. 한 참여자를 만나면, 그 사람이 다른 이주민 예술가를 소개해주는 방식이에요. 신뢰가 연결을 만들고, 연결이 데이터를 만드는 거죠."},
+    {speaker:"유미",text:"그럼 몇 명이나 만나야 하나요?"},
+    {speaker:"김병조 교수님",text:"질적 연구에서 표본 크기는 숫자를 먼저 보지 않아요. '얼마나 모으면 충분한가'는 데이터가 말해줘요. 그 기준을 이론적 포화라고 하는데, 그건 나중에 설명해줄게요."},
+    {speaker:"유미",text:"알겠습니다! 근데 혹시 표집 과정 자체에서 연구자 편향이 개입할 수 있지 않을까요?"},
+    {speaker:"김병조 교수님",text:"예리해요. 그게 목적적 표집의 가장 큰 약점이에요. 연구자 편향이 개입할 수 있고, 모집단 전체를 대표한다고 보기 어렵고, 다른 연구자가 똑같이 재현하기도 힘들죠. 그래서 왜 이 사람들을 선택했는지를 논문에 명확하게 서술해야 해요."},
+    {speaker:"김병조 교수님",text:"이론 자체가 다음 참여자를 요구하기 시작하는 순간이 올 거예요. 이론적 표집 문헌을 공부하고 정리해오세요. 도서관에 가서 근로장학생을 만나봐요.",
+     onEnd:()=>{state.purposive=true;setQ(1);addToast("✓ 목적적 표집 완료 → 도서관으로");}}
+  ],
+
+  profDetailB:[
+    {speaker:"김병조 교수님",text:"좋아요. 그건 최대 변동 사례 표집이에요. 이질적인 사례들을 의도적으로 포함하는 방식이죠. 체류자격도, 예술 장르도 다양하게 고르는 거예요. 다양한 맥락에서 공통적으로 나타나는 패턴이 있다면, 훨씬 설득력 있는 정책 함의를 만들어내거든요."},
+    {speaker:"김병조 교수님",text:"반면에 동질 사례 표집도 있어요. 공통 특성을 공유하는 집단을 집중적으로 보는 방식이죠. 예를 들어 이주예술가 중 E-6 비자 소지 공연예술가만 집중적으로 만나는 거예요. 특정 집단의 경험을 깊이 파고들 때 유용해요."},
+    {speaker:"김병조 교수님",text:"그런데 이주민 예술가는 접근하기 쉬운 집단이 아니에요. 커뮤니티가 폐쇄적이고, 체류 문제로 노출을 꺼리는 경우도 많죠. 그럴 땐 눈덩이 표집을 함께 써요. 신뢰가 연결을 만들고, 연결이 데이터를 만드는 거죠."},
+    {speaker:"유미",text:"그럼 몇 명이나 만나야 하나요?"},
+    {speaker:"김병조 교수님",text:"질적 연구에서 표본 크기는 숫자를 먼저 보지 않아요. '얼마나 모으면 충분한가'는 데이터가 말해줘요. 그 기준을 이론적 포화라고 하는데, 그건 나중에 설명해줄게요."},
+    {speaker:"유미",text:"알겠습니다! 근데 혹시 표집 과정 자체에서 연구자 편향이 개입할 수 있지 않을까요?"},
+    {speaker:"김병조 교수님",text:"예리해요. 그게 목적적 표집의 가장 큰 약점이에요. 연구자 편향이 개입할 수 있고, 모집단 전체를 대표한다고 보기 어렵고, 다른 연구자가 똑같이 재현하기도 힘들죠. 그래서 왜 이 사람들을 선택했는지를 논문에 명확하게 서술해야 해요."},
+    {speaker:"김병조 교수님",text:"이론 자체가 다음 참여자를 요구하기 시작하는 순간이 올 거예요. 우선 이론적 표집 문헌을 공부하고 정리해오세요. 도서관에 가서 근로장학생을 만나봐요.",
+    onEnd:()=>{state.purposive=true;setQ(1);addToast("✓ 목적적 표집 완료 → 도서관으로");}}
+  ],
+
+  profWaitLib:[
+    {speaker:"김병조 교수님",text:"도서관에 가서 이론적 표집을 먼저 공부해오세요."}
+  ],
+
+  profAngry:[
+    {speaker:"김병조 교수님",text:"...직무만족도 연구를 들고 왔다고요?"},
+    {speaker:"김병조 교수님",text:"유미학생, 지금 진심인가요?! 잠깐, 어디 가는 거예요!!!",
+     onEnd:()=>startChase()}
+  ],
+
+  profSatHint:[
+    {speaker:"김병조 교수님",text:"유미학생! 표집에 관해 열심히 공부하고 왔군요. 이젠 실제로 경험해보니 어떤가요?"},
+    {speaker:"유미",text:"교수님, 인터뷰가 열다섯 번째를 넘어가고 있어요. 심지어 이젠 새로운 참여자를 만나도... 이미 들은 이야기만 나오는 것 같아요."},
+    {speaker:"김병조 교수님",text:"새로운 인터뷰가 더 이상 새로운 걸 말해주지 않는 느낌이 드나요? 그게 바로 신호예요. 이론적 포화에 가까워지고 있다는."},
+    {speaker:"김병조 교수님",text:"자세한 내용은 저 밑에 피곤해보이는 사람에게 물어보세요."},
+    {speaker:"유미",text:"(아깐 자기가 알려준다더니......)"}
+  ],
+
+  phdIntro:[
+    {speaker:"유미",text:"저기, 혹시 잠시 시간 괜찮으세요...?"},
+{speaker:"박사과정생",text:"...!!!!"},
+{speaker:"박사과정생",text:"혹시 교수님이 보내셔서 오셨나요? 안 그래도 제가 지금 막 데이터 정리해서 올라가려 했습니다..!"},
+{speaker:"박사과정생",text:"죄송하다고 금방 가겠다고 말씀 좀 잘 부탁드려요...."},
+  {speaker:"유미",text:"그... 보내신건 맞는데...그런게 아니라 이론적 포화에 대해 여쭤보려고 왔어요."},
+  {speaker:"박사과정생",text:"아, 다행이네요. 선생님이 그 질적연구 하신다는 분이시군요! 말씀 많이 들었습니다."},
+    {speaker:"박사과정생",text:"새로운 인터뷰가 더 이상 새로운 걸 말해주지 않는 느낌이 드나요? 그게 바로 신호예요. 이론적 포화에 가까워지고 있다는.",
+     choices:[
+       {label:"A. 그럼 이제 드디어 끝인가요!!",fn:()=>openDialog(T.phdA)},
+       {label:"B. 그럼 도대체 이건 끝이 없는 작업인건가요?",fn:()=>openDialog(T.phdB)}
+     ]}
+  ],
+
+  phdA:[
+    {speaker:"박사과정생",text:"아쉽지만 틀렸어요. 질적 연구에서 표본 크기의 기준은 숫자가 아니에요. '새로운 인터뷰가 이론을 더 발전시키는가' 이게 기준이에요."},
+    {speaker:"박사과정생",text:"새로운 참여자를 만났는데 이미 있는 카테고리로 전부 설명이 되고, 새로운 개념이나 관계가 나오지 않으면 데이터 수집을 멈춰도 돼요. 양적 연구의 통계적 유의성처럼, 이론적 포화는 질적 연구만의 충분성 기준이에요."},
+    {speaker:"박사과정생",text:"실제로 어떤 순간에 포화를 확인할 수 있는지 궁금하죠?"},
+    {speaker:"유미",text:"네. 감으로 아는 건가요?"},
+    {speaker:"박사과정생",text:"감이 아니에요. 기록이에요. 초반엔 인터뷰마다 새로운 장벽이 나와요. '비자 문제', '언어 장벽'... 자료를 수집할 때마다 새 카테고리가 생기죠."},
+    {speaker:"박사과정생",text:"그런데 어느 시점부터는 새로운 데이터가 기존 카테고리 안으로 자연스럽게 들어와요. '아, 이건 정보 접근 문제구나.' '이것도 제도적 배제 패턴이네.' 새 범주가 생기지 않고, 기존 범주가 반복 확인될 때 그게 포화예요."},
+    {speaker:"유미",text:"포화가 됐다는 걸 어떻게 증명하나요?"},
+    {speaker:"박사과정생",text:"숫자로 증명할 수는 없어요. 대신 메모를 꼼꼼히 남기는 거예요. 몇 번째 인터뷰에서 어떤 새로운 개념이 등장했고, 언제부터 새로운 개념이 나오지 않았는지를 기록해두는 거죠. 이 기록이 포화의 근거가 돼요."},
+    {speaker:"유미",text:"그럼 드디어 이제 연구가 끝난 건가요?"},
+    {speaker:"박사과정생",text:"아니요, 이제부터가 진짜예요. 수집한 데이터를 분석하고, 이론을 정리하고, 정책 함의를 도출해야 하죠. 이주민 예술가들이 공통적으로 경험하는 제도적 장벽의 구조를 정리하고, 선진국 사례와 비교해서 한국 정책이 나아갈 방향을 제안하는 것까지."},
+    {speaker:"박사과정생",text:"데이터가 포화됐을 때, 비로소 이론이 완성되는 거예요. 이제 다시 교수님한테 가보세요."},
+    {speaker:"유미",text:"(뭐라고? 왜이렇게 할게 많은거야, 도저히 못해먹겠다...)"},
+     {speaker:"박사과정생",text:"혹시 휴학을 고민중이라면...저 위에 행정실로 찾아가시면 됩니다, 그러나 추천드리진 않아요."},
+     {speaker:"유미",text:"(헉, 내 생각이 들리나..?)",
+     onEnd:()=>{state.saturation=true;setQ(3);addToast("✓ 이론적 포화 이해 완료 → 교수님께 돌아가세요");}}
+  ],
+
+  phdB:[
+    {speaker:"박사과정생",text:"그렇게 생각하기 쉬워요. 하지만 꼭 그렇지는 않아요. 포화 이후에도 계속 인터뷰를 하면 데이터는 쌓이지만 이론은 더 이상 정교해지지 않아요."},
+    {speaker:"박사과정생",text:"질적 연구의 힘은 '많은 데이터'가 아니라 '깊은 이해'에서 나와요. 포화는 '이제 충분히 깊이 들어갔다'는 신호예요."},
+    {speaker:"박사과정생",text:"실제로 어떤 순간에 포화를 확인할 수 있는지 궁금하죠?"},
+    {speaker:"유미",text:"네. 감으로 아는 건가요?"},
+    {speaker:"박사과정생",text:"감이 아니에요. 기록이에요. 초반엔 인터뷰마다 새로운 장벽이 나와요. '비자 문제', '언어 장벽'... 자료를 수집할 때마다 새 카테고리가 생기죠."},
+    {speaker:"박사과정생",text:"그런데 어느 시점부터는 새로운 데이터가 기존 카테고리 안으로 자연스럽게 들어와요. '아, 이건 정보 접근 문제구나.' '이것도 제도적 배제 패턴이네.' 새 범주가 생기지 않고, 기존 범주가 반복 확인될 때 그게 포화예요."},
+    {speaker:"유미",text:"포화가 됐다는 걸 어떻게 증명하나요?"},
+    {speaker:"박사과정생",text:"숫자로 증명할 수는 없어요. 대신 메모를 꼼꼼히 남기는 거예요. 몇 번째 인터뷰에서 어떤 새로운 개념이 등장했고, 언제부터 새로운 개념이 나오지 않았는지를 기록해두는 거죠. 이 기록이 포화의 근거가 돼요."},
+    {speaker:"유미",text:"그럼 드디어 이제 연구가 끝난 건가요?"},
+    {speaker:"박사과정생",text:"아니요, 이제부터가 진짜예요. 수집한 데이터를 분석하고, 이론을 정리하고, 정책 함의를 도출해야 하죠. 이주민 예술가들이 공통적으로 경험하는 제도적 장벽의 구조를 정리하고, 선진국 사례와 비교해서 한국 정책이 나아갈 방향을 제안하는 것까지."},
+    {speaker:"박사과정생",text:"데이터가 포화됐을 때, 비로소 이론이 완성되는 거예요. 이제 다시 교수님한테 가보세요."},
+    {speaker:"유미",text:"(뭐라고? 왜이렇게 할게 많은거야, 도저히 못해먹겠다...)"},
+    {speaker:"박사과정생",text:"혹시 휴학을 고민중이라면...저 위에 행정실로 찾아가시면 됩니다, 그러나 추천드리진 않아요."},
+     {speaker:"유미",text:"(헉, 내 생각이 들리나..?)",
+     onEnd:()=>{state.saturation=true;setQ(3);addToast("✓ 이론적 포화 이해 완료 → 교수님께 돌아가세요");}}
+  ],
+
+  profFinal:[
+    {speaker:"유미",text:"처음 시작할 땐 쉬워보였는데... 교수님... 저 그냥 양적연구 할 걸 그랬나봐요.."},
+    {speaker:"김병조 교수님",text:"질적 연구를 쉽다고 얕보는 사람도 있어요. 그냥 인터뷰 몇 번 하면 끝나는 거 아니냐고."},
+    {speaker:"김병조 교수님",text:"하지만 유미 학생이 해온 과정, 데이터와 사람을 고르고, 이론을 따라 표집을 조정하고, 포화를 확인하는 것, 이게 다 엄밀한 방법론이에요."},
+    {speaker:"김병조 교수님",text:"할 수 있어요 유미학생! 이제 논문을 작성하러 가봅시다!",
+     onEnd:()=>{state.submitted=true;setQ(4);addToast("📝 강의실 우측 상단 Desk에 제출하세요!");}}
+  ],
+
+  library:[
+    {speaker:"내레이션",text:"인터뷰가 쌓이기 시작했다. 시각예술가, 음악가, 공연예술가... 이야기를 들을수록 패턴이 보이기 시작한다."},
+    {speaker:"내레이션",text:"그런데 동시에, 새로운 질문도 생겨난다. '왜 어떤 사람들은 제도의 존재 자체를 몰랐을까?', '체류자격에 따라 경험이 이렇게 다른 이유가 뭘까?'"},
+    {speaker:"내레이션",text:"이론이 만들어지고 있다. 그런데 아직 뭔가 빠진 것 같다."},
+    {speaker:"유미",text:"저기... 이론적 표집 관련 문헌 찾으러 왔는데요."},
+    {speaker:"도서관 근로장학생",text:"인터뷰를 하면서 이론이 보이기 시작했군요. 그럼 이제 질문이 달라져야 해요. '누구를 만날까'가 아니라 '이론이 누구를 요구하는가'로요.",
+     choices:[
+       {label:"A. 보다보니까 너무 힘든 것 같아요. 그냥 직무만족도 연구한다고 말씀드려야겠어요.",fn:()=>openDialog(T.libBad)},
+       {label:"B. 이론이 참여자를 요구한다는 게 무슨 뜻인가요?",fn:()=>openDialog(T.libA)}
+     ]}
+  ],
+
+  libBad:[
+    {speaker:"도서관 근로장학생",text:"진심인가요?"},
+    {speaker:"도서관 근로장학생",text:"어쩔 수 없군요... 직무만족도 관련 선행연구를 드릴게요."},
+      {speaker:"도서관 근로장학생",text:"저기 책장에서 아무거나 뽑아가시면 됩니다."},
+      {speaker:"도서관 근로장학생",text:"(경고: 교수님이 매우 화내실 수 있습니다.)",
+     onEnd:()=>{libraryBad=true;addToast("⚠️ 엉뚱한 문헌을 들고 돌아갑니다...");}}
+  ],
+
+  libA:[
+    {speaker:"도서관 근로장학생",text:"유미님 연구로 예를 들어볼게요. 초반 인터뷰에서 이런 패턴이 보였어요. '장기체류 예술가들은 제도를 알면서도 못 쓰고, 단기체류 예술가들은 제도 자체를 모른다.'"},
+    {speaker:"도서관 근로장학생",text:"그럼 이런 가설이 생기죠. '혹시 체류 기간이 정보 접근성에 영향을 주는 건 아닐까?' 이 가설을 확인하거나 반박하기 위해서 체류 기간이 짧은 예술가를 의도적으로 더 찾아가는 거예요. 이론이 다음 참여자를 결정하는 거죠. 이게 이론적 표집이에요."},
+    {speaker:"유미",text:"음.. 조금 헷갈려요, 그럼 목적적 표집이랑은 뭐가 다른 건가요?"},
+    {speaker:"도서관 근로장학생",text:"목적적 표집은 연구를 시작하기 전에 세운 기준으로 참여자를 골라요. '다양한 체류자격, 다양한 장르' 같은 기준을 미리 정해두는 거죠."},
+    {speaker:"도서관 근로장학생",text:"이론적 표집은 연구가 진행되는 중에 데이터와 이론이 함께 참여자를 결정해요. 목적적 표집이 출발점이라면, 이론적 표집은 항법 장치예요. 가다 보면 방향이 조정되는 거예요."},
+    {speaker:"도서관 근로장학생",text:"이론적 표집은 두 단계로 움직여요. 처음엔 동질적인 집단부터 시작해 이론의 뼈대를 잡죠. 다음엔 의도적으로 다른 사람들을 찾아가요. '이 이론이 다른 맥락에서도 성립하는가?'를 확인하는 거예요."},
+    {speaker:"유미",text:"그렇군요, 그럼 혹시 언제까지 계속 새로운 사람을 찾아야 하나요?"},
+    {speaker:"도서관 근로장학생",text:"바로 그게 다음 이야기예요. 우선 표집 내용을 정리해서 교수님께 제출하면 이론적 포화에 대해 말씀해 주실 거예요."},
+    {speaker:"유미",text:"보고서 작성중.... 데이터 수집, 코딩, 이론 발전, 그리고 다시 새로운 참여자 탐색. 이 반복이 이론을 단단하게 만든다... 그리고 어느 순간, 데이터가 직접 말해줄 것이다. 이제 됐다고.",
+     onEnd:()=>{state.theoretical=true;setQ(2);addToast("✓ 이론적 표집 이해 → 교수님께 돌아가세요");}}
+  ],
+
+  ending:[
+    {speaker:"내레이션",text:"유미는 끝내 연구를 포기하지 않았다."},
+    {speaker:"내레이션",text:"이주민 예술가들의 경험을 자료로 모으고, 누구를 만날지 선택하고, 이론이 요구하는 사람을 다시 찾아가고, 더 이상 새로운 개념이 나오지 않는 순간까지 버텨냈다."},
+    {speaker:"내레이션",text:"이제 남은 건 그 목소리들을 논문으로 정리해 한국 사회가 보지 못했던 제도적 공백을 드러내는 일이다."},
+    {speaker:"내레이션",text:"✨ The End",onEnd:()=>{scene="ending_screen";}}
+  ]
+};
+
+/* ══════ 인터랙션 함수 (순서 조건 강화) ══════ */
+function openTA(){
+  if(!state.intro)openDialog(T.taIntro);
+  else openDialog([{speaker:"조사방법론 조교",text:"강의실에서 김병조 교수님을 찾아가 보세요!"}]);
+}
+
+function openProf(){
+  if(!state.intro){openDialog([{speaker:"김병조 교수님",text:"먼저 복도에서 조사방법론 조교와 이야기하고 오세요."}]);return;}
+  if(state.purposive&&libraryBad&&!state.theoretical){openDialog(T.profAngry);return;} // ← !state.saturation → !state.theoretical 로 변경
+  if(!state.purposive){openDialog(T.profFirst);return;}
+  if(!state.theoretical){openDialog(T.profWaitLib);return;}
+  if(!state.saturation){openDialog(T.profSatHint);return;}
+  if(!state.submitted){openDialog(T.profFinal);return;}
+  openDialog([{speaker:"김병조 교수님",text:"잘 하고 있어요. 어서 논문 작성을 시작합시다!"}]);
+}
+
+function openLibrary(){
+  if(!state.purposive){openDialog([{speaker:"도서관 근로장학생",text:"먼저 교수님께 목적적 표집을 배우고 오세요."}]);return;}
+  if(!state.theoretical)openDialog(T.library);
+  else openDialog([{speaker:"도서관 근로장학생",text:"이론이 누구를 요구하는가, 그 질문을 잊지 마세요."}]);
+}
+
+function openPhD(){
+  if(!state.theoretical){openDialog([{speaker:"박사과정생",text:"너넨 이런거 하지마라..."},
+    {speaker:"박사과정생",text:"헉! 죄송해요, 혼잣말이 너무 컸군요. "}
+  ]);return;}
+  if(!state.saturation)openDialog(T.phdIntro);
+  else openDialog([{speaker:"박사과정생",text:"포화는 감이 아니라 기록입니다. 언제나 메모를 남기세요."}]);
+}
+
+function openDesk(){
+  if(!state.submitted){openDialog([{speaker:"제출 Desk",text:"아직 교수님과 마지막 대화를 끝내지 못했어요."}]);return;}
+  if(state.deskDone){openDialog([{speaker:"제출 Desk",text:"이미 제출했어요!"}]);return;}
+  openDialog([
+    {speaker:"유미",text:"(손을 떨며 제출 버튼을 누른다) ...드디어 끝났다."},
+    {speaker:"제출 Desk",text:"연구제안서 제출 완료! 이주민 예술가들의 목소리가 정책의 언어가 될 수 있도록 — 수고했어요."},
+    {speaker:"제출 Desk",text:"🎉",
+     onEnd:()=>{state.deskDone=true;setQ(5);setTimeout(()=>{scene="ending_screen";},400);}}
+  ]);
+}
+
+/* ══════ 추격전 ══════ */
+const CHASE_PLATFORMS=[
+  {x:0,y:GROUND_Y,w:820,h:80,color:"#1a1a2a"},
+  // 좌측 구역
+  {x:30,y:275,w:70,h:12,color:"#333355"},
+  {x:160,y:345,w:55,h:12,color:"#333355"},
+  {x:80,y:200,w:50,h:12,color:"#3a3a66"},
+  // 중앙 구역
+  {x:260,y:370,w:65,h:12,color:"#333355"},
+  {x:340,y:330,w:55,h:12,color:"#3a3a66"},
+  {x:420,y:295,w:50,h:12,color:"#4a4a77"},
+  {x:360,y:255,w:45,h:12,color:"#4a4a77"},
+  // 우측 구역
+  {x:520,y:405,w:65,h:12,color:"#333355"},
+  {x:610,y:350,w:55,h:12,color:"#3a3a66"},
+  {x:700,y:300,w:50,h:12,color:"#4a4a77"},
+  {x:650,y:255,w:48,h:12,color:"#4a4a77"},
+  // 높은 발판
+  {x:200,y:220,w:45,h:12,color:"#5a5a88"},
+  {x:480,y:215,w:50,h:12,color:"#5a5a88"},
+  {x:720,y:225,w:45,h:12,color:"#5a5a88"},
+];
+
+// 추격전에서의 문 위치
+const CHASE_DOOR={x:790,y:GROUND_Y-70,w:30,h:70};
+
+function startChase(){
+  bgm.volume = 0.7;  // 🔊 추격전에서만 볼륨 업
+  playBGM("모여봐요 조방 - chasing.mp3");
+  PROF_CHASE_ACTIVE=true;
+  chasePaused=true;
+  chaseWarningMsg="🚨 교수님이 실망하셨습니다. 최대한 빨리 도망치세요. 🚨";
+  scene="chase";
+  chaseTimer=25.0; // 20초
+  profScale=2.0;   // 처음에 크게
+  chasePhase=0;
+  PROF.x=-700;PROF.y=GROUND_Y-80;PROF.vx=0;PROF.vy=0;PROF.onGround=false;
+  PROF.speed=130;
+  PL.x=620;PL.y=GROUND_Y-44;PL.vx=0;PL.vy=0;PL.onGround=false;
+}
+
+function updateChase(dt){
+  if(chasePaused)return; // 일시정지 시 업데이트 중단
+
+  // 타이머 감소
+  chaseTimer-=dt;
+
+  // 교수 크기: 20초에서 0초로 갈수록 2.2 → 0.8
+  const ratio=Math.max(0,chaseTimer/25);
+  profScale=1+2.5*ratio; // 20초=2.2, 0초=0.8
+
+  // 20초 생존 성공
+  if(chaseTimer<=0){
+  chaseTimer=0;
+  PROF_CHASE_ACTIVE=false;
+  addToast("🎉 생존 성공! 도서관으로 돌아갑니다.");
+  setTimeout(()=>{
+    scene="game";
+    currentMap="library";
+    PL.x=80;PL.y=GROUND_Y-44;PL.vx=0;PL.vy=0;
+    updateMapUI();
+     bgm.volume = 0.4;
+    playBGM("모여봐요 조방 - 도서관.mp3");
+  },1500);
+  return;
+}
+
+  // 교수 AI
+  const dx=PL.x-PROF.x;
+  PROF.vx=(dx>0?1:-1)*PROF.speed;
+  PROF.vy+=G*dt;
+  PROF.x+=PROF.vx*dt;
+  PROF.y+=PROF.vy*dt;
+  physResolve(PROF,CHASE_PLATFORMS);
+  if(PROF.onGround&&PL.y<PROF.y-30)PROF.vy=JUMP*1;
+
+  // 플레이어 이동
+  if(K["ArrowLeft"])PL.vx=-SPEED;
+  else if(K["ArrowRight"])PL.vx=SPEED;
+  else PL.vx=0;
+  PL.vy+=G*dt;
+  PL.x+=PL.vx*dt;
+  PL.y+=PL.vy*dt;
+  // 벽
+  PL.x=Math.max(0,Math.min(W-PL.w,PL.x));
+  physResolve(PL,CHASE_PLATFORMS);
+
+  // 문 접근 → 일시정지 + 안내
+  if(overlap(PL,CHASE_DOOR)&&!chasePaused){
+    chasePaused=true;
+    chaseWarningMsg="수강신청 정정기간이 지나서\n나갈 수 없습니다.\n[Space] 확인";
+    return;
+  }
+
+  // 교수에게 잡히면
+  const profHitbox={x:PROF.x,y:PROF.y,w:PROF.w*profScale,h:PROF.h*profScale};
+  if(overlap(PL,profHitbox)){
+    scene="reject";
+    rejectT=0;
+    PROF_CHASE_ACTIVE=false;
+  }
+}
+
+/* ══════ 드랍 맵 업데이트 ══════ */
+function updateDrop(dt){
+  if(!dropFailed){
+    dropTimer-=dt;
+    if(dropTimer<=0){
+      dropTimer=0;
+      dropFailed=true;
+      dropFailedT=0;
+      return;
+    }
+  }else{
+    dropFailedT+=dt;
+    if(dropFailedT>2.5){
+      dropFailed=false;
+      dropTimer=30;
+      scene="game";
+      currentMap="classroom";
+      PL.x=80;PL.y=GROUND_Y-44;
+      PL.vx=0;PL.vy=0;
+      updateMapUI();
+    }
+    return;
+  }
+
+  // 이동
+  const ACCEL=250;
+const FRICTION=0.96;
+if(K["ArrowLeft"])dropVX=Math.max(dropVX-ACCEL*dt,-DROP_SPEED);
+else if(K["ArrowRight"])dropVX=Math.min(dropVX+ACCEL*dt,DROP_SPEED);
+else dropVX*=FRICTION;
+
+  dropVY+=DROP_G*dt;
+  dropPlayerX+=dropVX*dt;
+  dropPlayerY+=dropVY*dt;
+
+  // 벽
+  dropPlayerX=Math.max(0,Math.min(W-PL.w,dropPlayerX));
+
+  // 플랫폼 충돌
+  dropOnGround=false;
+  for(const p of DROP_PLATFORMS){
+    if(dropPlayerX+PL.w>p.x&&dropPlayerX<p.x+p.w){
+      if(dropPlayerY+PL.h>p.y&&dropPlayerY+PL.h<p.y+p.h+20&&dropVY>=0){
+        dropPlayerY=p.y-PL.h;
+        dropVY=0;
+        dropOnGround=true;
+      }
+    }
+  }
+
+  // 바닥 아래로 떨어지면 리셋
+  if(dropPlayerY>500){dropPlayerY=455;dropVY=0;}
+
+  // 꼭대기 문 충돌 감지
+  const dropDoor={x:90,y:40,w:80,h:50};
+  const dropPL={x:dropPlayerX,y:dropPlayerY,w:PL.w,h:PL.h};
+  if(overlap(dropPL,dropDoor)){
+    scene="charSelect";
+    charIdx=0;
+  }
+}
+
+/* ══════ 물리 헬퍼 ══════ */
+function physResolve(obj,platforms){
+  obj.onGround=false;
+  if(obj.y+obj.h>GROUND_Y+80){obj.y=GROUND_Y+80-obj.h;obj.vy=0;obj.onGround=true;}
+  for(const p of platforms){
+    if(obj.x+obj.w>p.x&&obj.x<p.x+p.w){
+      if(obj.y+obj.h>p.y&&obj.y+obj.h<p.y+p.h+20&&obj.vy>=0){
+        obj.y=p.y-obj.h;obj.vy=0;obj.onGround=true;
+      }
+    }
+  }
+  if(obj.x<0){obj.x=0;obj.vx=0;}
+  if(obj.x+obj.w>W){obj.x=W-obj.w;obj.vx=0;}
+}
+
+/* ══════ 메인 게임 업데이트 ══════ */
+function updateGame(dt){
+  if(dialog.open)return;
+  // 이동
+  if(K["ArrowLeft"]){PL.vx=-SPEED;PL.dir=-1;}
+  else if(K["ArrowRight"]){PL.vx=SPEED;PL.dir=1;}
+  else PL.vx=0;
+  PL.vy+=G*dt;
+  PL.x+=PL.vx*dt;
+  PL.y+=PL.vy*dt;
+  PL.x=Math.max(0,Math.min(W-PL.w,PL.x));
+  const map=getMap();
+  const allPlats=[{x:0,y:GROUND_Y,w:W,h:80,color:map.floor.color},...(map.platforms||[])];
+  physResolve(PL,allPlats);
+  // 애니
+  if(PL.vx!==0&&PL.onGround){PL.frameT+=dt;if(PL.frameT>0.12){PL.frameT=0;PL.frame=(PL.frame+1)%4;}}
+  else PL.frame=0;
+}
+
+/* ══════ 퀘스트/UI ══════ */
+function setQ(idx){quests[idx].done=true;updateQUI();}
+function updateQUI(){
+  const ql=document.getElementById("qlist");
+  ql.innerHTML=quests.map((q,i)=>{
+    const isDone=q.done;
+    const isNow=!isDone&&quests.slice(0,i).every(qq=>qq.done);
+    return `<div class="qitem${isDone?" done":isNow?" now":""}">
+      <span class="qicon">${isDone?"✅":isNow?"▶":"⬜"}</span>
+      <span>${q.t}</span></div>`;
+  }).join("");
+}
+function updateMapUI(){
+  const mn=document.getElementById("mapname");
+  mn.textContent=getMap()?.name??"";
+}
+function addToast(msg){
+  const b=document.getElementById("toast-box");
+  const d=document.createElement("div");d.className="toast";d.textContent=msg;
+  b.appendChild(d);setTimeout(()=>d.remove(),3200);
+}
+
+/* ══════ wrapTxt ══════ */
+function wrapTxt(t,maxW){
+  const words=t.split("");let line="",lines=[];
+  cx.font="14px 'Malgun Gothic',sans-serif";
+  for(const ch of words){
+    const test=line+ch;
+    if(cx.measureText(test).width>maxW){lines.push(line);line=ch;}
+    else line=test;
+  }
+  if(line)lines.push(line);
+  return lines;
+}
+
+/* ══════ 그리기: 캐릭터 ══════ */
+function drawChar(x,y,ch,dir,frame,scale=1){
+  cx.save();
+  cx.translate(x+(PL.w/2),y);
+  if(dir===-1)cx.scale(-1,1);
+  cx.scale(scale,scale);
+  const ox=-(PL.w/2),oy=0;
+
+  // 그림자
+  cx.fillStyle="rgba(0,0,0,0.25)";
+  cx.beginPath();cx.ellipse(ox+14,oy+46,10,4,0,0,Math.PI*2);cx.fill();
+
+  // 다리
+  const legOff=frame%2===0?2:-2;
+  cx.fillStyle="#1e293b";
+  cx.fillRect(ox+5,oy+36,9,12+legOff);
+  cx.fillRect(ox+14,oy+36,9,12-legOff);
+  // 신발
+  cx.fillStyle="#0f172a";
+  cx.fillRect(ox+4,oy+46+legOff,11,5);
+  cx.fillRect(ox+13,oy+46-legOff,11,5);
+
+  // 몸통
+  cx.fillStyle=ch.body;
+  cx.beginPath();cx.roundRect(ox+3,oy+16,22,22,4);cx.fill();
+  // 옷 라인 (포인트)
+  cx.fillStyle="rgba(255,255,255,0.15)";
+  cx.fillRect(ox+3,oy+16,22,3);
+  // 단추
+  cx.fillStyle="rgba(255,255,255,0.3)";
+  cx.beginPath();cx.arc(ox+14,oy+22,1.5,0,Math.PI*2);cx.fill();
+  cx.beginPath();cx.arc(ox+14,oy+28,1.5,0,Math.PI*2);cx.fill();
+
+  // 팔
+  cx.fillStyle=ch.body;
+  cx.fillRect(ox-2,oy+17,6,14); // 왼팔
+  cx.fillRect(ox+24,oy+17,6,14); // 오른팔
+  // 손
+  cx.fillStyle="#ffd6a5";
+  cx.beginPath();cx.arc(ox+1,oy+32,4,0,Math.PI*2);cx.fill();
+  cx.beginPath();cx.arc(ox+27,oy+32,4,0,Math.PI*2);cx.fill();
+
+  // 목
+  cx.fillStyle="#ffd6a5";
+  cx.fillRect(ox+10,oy+12,8,6);
+
+  // 얼굴
+  cx.fillStyle="#ffd6a5";
+  cx.beginPath();cx.arc(ox+14,oy+9,11,0,Math.PI*2);cx.fill();
+  // 볼터치
+  cx.fillStyle="rgba(255,150,150,0.3)";
+  cx.beginPath();cx.arc(ox+7,oy+11,3.5,0,Math.PI*2);cx.fill();
+  cx.beginPath();cx.arc(ox+21,oy+11,3.5,0,Math.PI*2);cx.fill();
+  // 눈
+  cx.fillStyle="#1e293b";
+  cx.beginPath();cx.arc(ox+10,oy+8,1.8,0,Math.PI*2);cx.fill();
+  cx.beginPath();cx.arc(ox+18,oy+8,1.8,0,Math.PI*2);cx.fill();
+  // 눈 하이라이트
+  cx.fillStyle="white";
+  cx.beginPath();cx.arc(ox+10.7,oy+7.2,0.7,0,Math.PI*2);cx.fill();
+  cx.beginPath();cx.arc(ox+18.7,oy+7.2,0.7,0,Math.PI*2);cx.fill();
+  // 입 (미소)
+  cx.strokeStyle="#c0737a";cx.lineWidth=1.2;
+  cx.beginPath();cx.arc(ox+14,oy+10,3,0.2,Math.PI-0.2);cx.stroke();
+
+  // 머리카락 (머리에 딱 맞게)
+  cx.fillStyle=ch.hair;
+  // 앞머리
+  cx.beginPath();cx.roundRect(ox+3,oy+0,22,8,4);cx.fill();
+  // 옆머리
+  cx.fillRect(ox+3,oy+0,5,14);
+  cx.fillRect(ox+20,oy+0,5,14);
+  // 뒷머리 볼륨
+  cx.beginPath();cx.arc(ox+14,oy+8,12,Math.PI,Math.PI*2);cx.fill();
+
+  // 모자
+  cx.fillStyle=ch.hat;
+  cx.beginPath();cx.roundRect(ox+4,oy-4,20,9,3);cx.fill();
+  // 모자 챙
+  cx.fillRect(ox+1,oy+4,26,4);
+  // 모자 밴드
+  cx.fillStyle="rgba(255,255,255,0.2)";
+  cx.fillRect(ox+4,oy+2,20,2);
+
+    // 머리 위 작은 강아지 (유미 전용)
+if((CHARS.indexOf(selectedChar)===0 || arguments[2]===CHARS[0]) && (scene==="game"||(scene==="charSelect"&&arguments[2]===CHARS[0]))){
+  const dx=ox+8, dy=oy-10; // 살짝 아래로
+  const s=0.95; // 크기 키움
+    cx.save();
+    cx.translate(dx,dy);
+    cx.scale(s,s);
+
+    // 몸통 (머리 뒤에 걸침)
+    cx.fillStyle="#8b5a2b";
+    cx.beginPath();cx.ellipse(0,4,9,6,0,0,Math.PI*2);cx.fill();
+
+    // 앞발 두 개 (캐릭터 머리카락에 걸침)
+    cx.fillStyle="#7a4e22";
+    cx.fillRect(-7,7,5,7);  // 왼발
+    cx.fillRect(3,7,5,7);   // 오른발
+
+    // 귀 (머리 먼저 가리지 않게 먼저 그림)
+    cx.fillStyle="#6f451f";
+    cx.beginPath();cx.ellipse(-8,-2,3,5,Math.PI*0.1,0,Math.PI*2);cx.fill();
+    cx.beginPath();cx.ellipse(2,-6,3,5,Math.PI*0.1,0,Math.PI*2);cx.fill();
+
+    // 얼굴
+    cx.fillStyle="#8b5a2b";
+    cx.beginPath();cx.arc(-3,0,7,0,Math.PI*2);cx.fill();
+
+    // 눈
+    cx.fillStyle="#2d1a0e";
+    cx.beginPath();cx.arc(-6,0,1.3,0,Math.PI*2);cx.fill();
+    cx.beginPath();cx.arc(-1,0,1.3,0,Math.PI*2);cx.fill();
+    // 눈 하이라이트
+    cx.fillStyle="white";
+    cx.beginPath();cx.arc(-5.4,-0.4,0.5,0,Math.PI*2);cx.fill();
+    cx.beginPath();cx.arc(-0.4,-0.4,0.5,0,Math.PI*2);cx.fill();
+
+    // 코
+    cx.fillStyle="#2d1a0e";
+    cx.beginPath();cx.ellipse(-3,2,1.8,1.3,0,0,Math.PI*2);cx.fill();
+
+    cx.restore();
+  }
+
+  cx.restore();
+}
+
+/* ══════ 그리기: 교수 (추격, 크기 변화) ══════ */
+function drawProf(){
+  const x=PROF.x,y=PROF.y;
+  const s=profScale;
+  cx.save();
+  cx.translate(x+PROF.w/2,y+PROF.h/2);
+  cx.scale(s,s);
+  cx.shadowBlur=15*s;cx.shadowColor="#ff2200";
+  cx.fillStyle="#ff6666";cx.beginPath();cx.arc(0,-20,18,0,Math.PI*2);cx.fill();
+  cx.strokeStyle="#ff0000";cx.lineWidth=2;cx.stroke();
+  cx.font=`${15*s}px sans-serif`;cx.textAlign="center";cx.fillText("😡",0,-8);
+  cx.fillStyle="#ff4444";cx.fillRect(-16,-2,32,26);
+  cx.fillStyle="#1a0000";cx.fillRect(-14,24,10,12);cx.fillRect(4,24,10,12);
+  cx.restore();
+  cx.textAlign="left";
+}
+
+/* ══════ 그리기: NPC ══════ */
+function drawNPC(npc,hi){
+  const x=npc.x,y=npc.y;
+  cx.save();
+  if(hi){cx.shadowBlur=14;cx.shadowColor="#fffbe6";}
+  cx.fillStyle=npc.color;cx.beginPath();cx.arc(x+17,y+13,13,0,Math.PI*2);cx.fill();
+  cx.strokeStyle=hi?"#fffbe6":"rgba(0,0,0,.4)";cx.lineWidth=1.5;cx.stroke();
+  cx.font="16px sans-serif";cx.textAlign="center";cx.fillText(npc.emoji,x+17,y+19);
+  cx.font="bold 11px sans-serif";
+  const lw=cx.measureText(npc.label).width+10;
+  cx.fillStyle="rgba(10,15,30,.9)";cx.fillRect(x+17-lw/2,y-18,lw,16);
+  cx.fillStyle="#f8fafc";cx.fillText(npc.label,x+17,y-6);
+  if(hi){
+    cx.fillStyle="rgba(253,230,138,.9)";cx.beginPath();cx.roundRect(x+17-30,y-38,60,18,4);cx.fill();
+    cx.fillStyle="#111";cx.font="10px sans-serif";cx.fillText("[Space] 대화",x+17,y-26);
+  }
+  cx.restore();cx.textAlign="left";
+}
+
+/* ══════ 그리기: 배경/맵 ══════ */
+function drawMapBg(map){
+  const grad=cx.createLinearGradient(0,0,0,H);
+  grad.addColorStop(0,map.bgTop);grad.addColorStop(1,map.bgBot);
+  cx.fillStyle=grad;cx.fillRect(0,0,W,H);
+  cx.fillStyle=map.floor.color;cx.fillRect(0,map.floor.y,W,H-map.floor.y);
+  cx.fillStyle="rgba(255,255,255,.07)";cx.fillRect(0,map.floor.y,W,3);
+  if(map.platforms)for(const p of map.platforms){
+    cx.fillStyle=p.color||"#4a5a8a";cx.fillRect(p.x,p.y,p.w,p.h);
+    cx.fillStyle="rgba(255,255,255,.15)";cx.fillRect(p.x,p.y,p.w,3);
+    cx.fillStyle="rgba(0,0,0,.2)";cx.fillRect(p.x,p.y+p.h-3,p.w,3);
+  }
+  if(map.decos)for(const d of map.decos)drawDeco(d);
+  if(map.boards)for(const b of map.boards){
+    const near=Math.abs(PL.x+PL.w/2-(b.x+b.w/2))<55;
+    cx.save();
+    if(near){cx.shadowBlur=14;cx.shadowColor="#fff";}
+    cx.fillStyle=b.color||"#93c5fd";cx.fillRect(b.x,b.y,b.w,b.h);
+    cx.strokeStyle=near?"#fff":"rgba(0,0,0,.3)";cx.lineWidth=2;cx.strokeRect(b.x,b.y,b.w,b.h);
+    cx.fillStyle="#1a1a2e";cx.font="bold 12px sans-serif";cx.textAlign="center";
+    const lines=b.label.split("\n");
+    lines.forEach((l,i)=>cx.fillText(l,b.x+b.w/2,b.y+b.h/2-6+(i*16)));
+    if(near){
+      cx.fillStyle="rgba(253,230,138,.9)";cx.beginPath();cx.roundRect(b.x+b.w/2-30,b.y-20,60,16,3);cx.fill();
+      cx.fillStyle="#111";cx.font="10px sans-serif";cx.fillText("[Space]",b.x+b.w/2,b.y-8);
+    }
+    cx.restore();cx.textAlign="left";
+  }
+}
+
+function drawDeco(d){
+  cx.save();
+  if(d.type==="sign"){
+    cx.fillStyle="#2d1b00";cx.fillRect(d.x,d.y,120,60);
+    cx.fillStyle="#a07040";cx.fillRect(d.x+3,d.y+3,114,54);
+    cx.fillStyle="#ffe4b5";cx.font="bold 11px sans-serif";cx.textAlign="center";
+    d.text.split("\n").forEach((l,i)=>cx.fillText(l,d.x+60,d.y+22+i*18));
+  }else if(d.type==="locker"){
+    cx.fillStyle="#4a3560";cx.fillRect(d.x,d.y,34,90);
+    cx.strokeStyle="#6a55a0";cx.lineWidth=1;cx.strokeRect(d.x,d.y,34,90);
+    cx.fillStyle="#3a2550";cx.fillRect(d.x+2,d.y+2,30,86);
+    cx.fillStyle="#6a55a0";cx.beginPath();cx.arc(d.x+20,d.y+45,3,0,Math.PI*2);cx.fill();
+  }else if(d.type==="shelf"){
+    cx.fillStyle="#5a3a1a";cx.fillRect(d.x,d.y,60,130);
+    cx.fillStyle="#4a2a0a";cx.fillRect(d.x+2,d.y+2,56,126);
+    const bookColors=["#e74c3c","#3498db","#2ecc71","#f39c12","#9b59b6","#1abc9c"];
+    for(let i=0;i<3;i++){
+      const by=d.y+10+i*38;
+      for(let j=0;j<4;j++){
+        cx.fillStyle=bookColors[(i*4+j)%bookColors.length];
+        cx.fillRect(d.x+4+j*13,by,11,30);
+      }
+    }
+  }else if(d.type==="board"){
+    cx.fillStyle="#1e4d3b";cx.fillRect(d.x,d.y,d.w,d.h);
+    cx.strokeStyle="#2d6e56";cx.lineWidth=2;cx.strokeRect(d.x,d.y,d.w,d.h);
+    cx.fillStyle="#a7f3d0";cx.font="bold 13px sans-serif";cx.textAlign="center";
+    cx.fillText(d.text,d.x+d.w/2,d.y+d.h/2+5);
+  }else if(d.type==="window"){
+    cx.fillStyle="#1a3a5a";cx.fillRect(d.x,d.y,54,70);
+    cx.strokeStyle="#4a8abf";cx.lineWidth=2;cx.strokeRect(d.x,d.y,54,70);
+    cx.fillStyle="rgba(100,180,255,.18)";cx.fillRect(d.x+3,d.y+3,48,64);
+    cx.strokeStyle="rgba(100,180,255,.4)";cx.lineWidth=1;
+    cx.beginPath();cx.moveTo(d.x+27,d.y);cx.lineTo(d.x+27,d.y+70);cx.stroke();
+    cx.beginPath();cx.moveTo(d.x,d.y+35);cx.lineTo(d.x+54,d.y+35);cx.stroke();
+  }else if(d.type==="chalkText"){
+  cx.save();
+  cx.font="bold 11px monospace";
+  cx.textAlign="left";
+  const chars=[...d.text];
+  const wobbles=[0,2,-1,1.5,-2,0.5,1,-1.5,2,-0.5,1,0,-1];
+  const alphas=[0.6,0.5,0.7,0.55,0.65,0.5,0.6,0.7,0.5,0.6,0.55,0.65,0.5];
+  let cx2=d.x;
+  chars.forEach((ch,i)=>{
+    cx.save();
+    cx.translate(cx2,d.y+wobbles[i%wobbles.length]);
+    cx.globalAlpha=alphas[i%alphas.length];
+    cx.fillStyle="#ddd8c4";
+    cx.fillText(ch,0,0);
+    cx.restore();
+    cx2+=8;
+  });
+  cx.restore();
+}
+  cx.restore();cx.textAlign="left";
+}
+
+/* ══════ 그리기: 포탈 ══════ */
+function drawPortals(map){
+  if(!map.portals)return;
+  const t=Date.now()/1000;
+  for(const p of map.portals){
+    const canUse=(!p.cond||p.cond());
+    cx.save();
+    if(!canUse){cx.globalAlpha=0.35;}
+    const grd=cx.createRadialGradient(p.x+p.w/2,p.y+p.h/2,2,p.x+p.w/2,p.y+p.h/2,p.w);
+    // 드랍 포탈은 붉은색
+    const hue=p.isDrop?0:(canUse?270:200);
+    grd.addColorStop(0,`hsla(${hue},80%,70%,.9)`);
+    grd.addColorStop(1,`hsla(${hue},80%,30%,.2)`);
+    cx.fillStyle=grd;cx.fillRect(p.x,p.y,p.w,p.h);
+    cx.strokeStyle=`hsla(${hue},90%,70%,${.6+.4*Math.sin(t*3)})`;
+    cx.lineWidth=2+Math.sin(t*3);cx.strokeRect(p.x,p.y,p.w,p.h);
+    cx.fillStyle="#fff";cx.font="bold 11px sans-serif";cx.textAlign="center";
+    cx.fillText(p.label,p.x+p.w/2,p.y-6);
+    if(canUse){
+      cx.fillStyle=p.isDrop?"#fca5a5":"rgba(253,230,138,.9)";cx.font="10px sans-serif";
+      cx.fillText("[↑] 진입",p.x+p.w/2,p.y+p.h+14);
+    }else{
+      cx.fillStyle="#94a3b8";cx.font="10px sans-serif";cx.fillText("잠김",p.x+p.w/2,p.y+p.h+14);
+    }
+    cx.restore();cx.textAlign="left";
+  }
+}
+
+/* ══════ 그리기: 대화창 (NPC 스타일 중앙) ══════ */
+function drawDialog(){
+  if(!dialog.open)return;
+  const bx=16,by=H-170,bw=W-32,bh=160,r=8;
+  cx.save();cx.fillStyle="rgba(6,10,24,.97)";
+  cx.beginPath();cx.roundRect(bx,by,bw,bh,r);cx.fill();
+  cx.strokeStyle="#3b82f6";cx.lineWidth=2;cx.stroke();
+  const cur=dialog.lines[dialog.idx];
+  if(!cur){cx.restore();return;}
+  // speaker 항상 표시 (유미/내레이션=초록, 나머지=파랑)
+  const spColor=(cur.speaker==="유미"||cur.speaker==="내레이션")?"#86efac":"#93c5fd";
+  cx.fillStyle=spColor;cx.font="bold 15px sans-serif";
+  cx.fillText(cur.speaker||"",bx+14,by+24);
+  // text 항상 표시
+  const lines=wrapTxt(cur.text||"",bw-28);
+  cx.fillStyle="#f1f5f9";cx.font="14px 'Malgun Gothic',sans-serif";
+  lines.forEach((l,i)=>cx.fillText(l,bx+14,by+46+i*20));
+  if(dialog.choices){
+    const choiceTop=by+46+lines.length*20+8;
+    dialog.choices.forEach((c,i)=>{
+      const cy=choiceTop+i*32;const sel=(i===choiceIdx);
+      cx.fillStyle=sel?"rgba(253,230,138,.15)":"rgba(30,41,59,.7)";
+      cx.beginPath();cx.roundRect(bx+10,cy,bw-20,26,4);cx.fill();
+      cx.strokeStyle=sel?"#fde68a":"#475569";cx.lineWidth=1.5;
+      cx.beginPath();cx.roundRect(bx+10,cy,bw-20,26,4);cx.stroke();
+      cx.fillStyle=sel?"#fde68a":"#94a3b8";
+      cx.font=`${sel?"bold ":""}12px sans-serif`;
+      cx.fillText(c.label,bx+18,cy+17);
+    });
+    cx.fillStyle="#475569";cx.font="11px sans-serif";cx.textAlign="right";
+    cx.fillText("[↑↓] 커서  [Space] 선택",bx+bw-12,by+bh-8);
+    cx.textAlign="left";cx.restore();return;
+  }
+  cx.fillStyle="#475569";cx.font="11px sans-serif";cx.textAlign="right";
+  cx.fillText(`${dialog.idx+1}/${dialog.lines.length}  [Space] 다음`,bx+bw-12,by+bh-8);
+  cx.textAlign="left";cx.restore();
+}
+
+/* ══════ 추격전 안내 대화창 (중앙 NPC 스타일) ══════ */
+function drawChaseWarning(){
+  if(!chasePaused)return;
+  const bx=W/2-260,by=H/2-80,bw=520,bh=160,r=10;
+  cx.save();
+  cx.fillStyle="rgba(6,10,24,.97)";
+  cx.beginPath();cx.roundRect(bx,by,bw,bh,r);cx.fill();
+  cx.strokeStyle="#f87171";cx.lineWidth=3;cx.stroke();
+  // 제목
+  cx.fillStyle="#fca5a5";cx.font="bold 16px sans-serif";cx.textAlign="center";
+  cx.fillText("🚫 안내",W/2,by+30);
+  // 메시지
+  cx.fillStyle="#f1f5f9";cx.font="15px 'Malgun Gothic',sans-serif";
+  const msgLines=chaseWarningMsg.split("\n");
+  msgLines.forEach((l,i)=>cx.fillText(l,W/2,by+58+i*26));
+  cx.fillStyle="#64748b";cx.font="12px sans-serif";
+  cx.fillText("[Space] 닫기",W/2,by+bh-14);
+  cx.restore();cx.textAlign="left";
+}
+
+/* ══════ 드랍 맵 그리기 ══════ */
+function drawDropScene(){
+  // 배경 (높은 맵 - 세로로 길게 표현, 카메라 오프셋)
+  const camY=Math.min(0,Math.max(-(500-H),-(dropPlayerY-H*0.6)));
+
+  cx.save();cx.translate(0,camY);
+
+  // 배경
+  const grad=cx.createLinearGradient(0,-camY,0,500-camY);
+  grad.addColorStop(0,"#1a0a0a");grad.addColorStop(1,"#3a1010");
+  cx.fillStyle=grad;cx.fillRect(0,-camY,W,H);
+
+  // 별 같은 배경 요소
+  for(let i=0;i<40;i++){
+    const sx=(Math.sin(i*137.5)*.5+.5)*W;
+    const sy=(Math.cos(i*97.3)*.5+.5)*480;
+    cx.fillStyle=`rgba(255,180,180,${0.1+0.1*Math.sin(i)})`;
+    cx.beginPath();cx.arc(sx,sy,1,0,Math.PI*2);cx.fill();
+  }
+
+  // 발판 그리기
+  for(const p of DROP_PLATFORMS){
+    cx.fillStyle=p.color||"#7a3a3a";
+    cx.fillRect(p.x,p.y,p.w,p.h);
+    cx.fillStyle="rgba(255,200,200,.2)";cx.fillRect(p.x,p.y,p.w,3);
+    cx.fillStyle="rgba(0,0,0,.3)";cx.fillRect(p.x,p.y+p.h-2,p.w,2);
+  }
+
+  // 꼭대기 문
+  const doorX=90,doorY=40;
+  cx.fillStyle="#1a0000";cx.fillRect(doorX,doorY,80,50);
+  cx.strokeStyle="#ff4444";cx.lineWidth=3;cx.strokeRect(doorX,doorY,80,50);
+  cx.fillStyle="#ff6666";cx.font="bold 12px sans-serif";cx.textAlign="center";
+  cx.fillText("📤 휴학 승인서",doorX+40,doorY+20);
+  cx.fillStyle="#fca5a5";cx.font="11px sans-serif";
+  cx.fillText("(↑ 진입 시 캐릭터 선택으로)",doorX+40,doorY+38);
+  cx.textAlign="left";
+
+  // 플레이어 그리기
+  drawChar(dropPlayerX,dropPlayerY,selectedChar,K["ArrowLeft"]?-1:1,0);
+
+  cx.restore();
+
+  // 맵 이름 표시
+  cx.fillStyle="rgba(0,0,0,.6)";cx.fillRect(0,0,W,32);
+  cx.fillStyle="#f87171";cx.font="bold 14px sans-serif";cx.textAlign="center";
+  cx.fillText("⚠️ 휴학 신청 도전 — 꼭대기 문에 도달하면 휴학 승인!",W/2,20);
+  cx.fillStyle="#64748b";cx.font="12px sans-serif";
+  cx.fillText("(←→ 이동, ↑ 점프)",W/2,H-10);
+
+    // 타이머 표시 (상단 중앙)
+  const mins = Math.floor(dropTimer / 60);
+  const secs = Math.floor(dropTimer % 60);
+  const timeStr = `⏱ ${mins}:${secs.toString().padStart(2,'0')}`;
+  const timerColor = dropTimer > 60 ? "#86efac" : dropTimer > 30 ? "#fde68a" : "#f87171";
+
+  cx.fillStyle = "rgba(0,0,0,0.75)";
+  cx.beginPath(); cx.roundRect(W/2 - 64, 35, 140, 34, 6); cx.fill();
+  cx.fillStyle = timerColor;
+  cx.font = "bold 20px sans-serif";
+  cx.textAlign = "center";
+  cx.fillText(timeStr, W/2, 60);
+  cx.textAlign = "left";
+
+  // 실패 화면
+  if(dropFailed){
+    cx.fillStyle = "rgba(0,0,0,0.75)";
+    cx.fillRect(0, 0, W, H);
+    cx.textAlign = "center";
+    cx.fillStyle = "#f87171";
+    cx.font = "bold 32px sans-serif";
+    cx.fillText("휴학 신청이 반려되었습니다.", W/2, H/2 - 30);
+    cx.fillStyle = "#94a3b8";
+    cx.font = "16px sans-serif";
+    cx.fillText("교수님께 들키기 전에 강의실로 돌아가세요🫣", W/2, H/2 + 14);
+    cx.textAlign = "left";
+  }
+  cx.textAlign="left";
+}
+
+/* ══════ 추격 씬 그리기 ══════ */
+function drawChaseScene(){
+  const grad=cx.createLinearGradient(0,0,0,H);
+  grad.addColorStop(0,"#0d0010");grad.addColorStop(1,"#200020");
+  cx.fillStyle=grad;cx.fillRect(0,0,W,H);
+
+  // 바닥 + 발판
+  for(const p of CHASE_PLATFORMS){
+    cx.fillStyle=p.color||"#333";cx.fillRect(p.x,p.y,p.w,p.h);
+    cx.fillStyle="rgba(255,255,255,.08)";cx.fillRect(p.x,p.y,p.w,3);
+  }
+
+  // 문 (오른쪽 끝)
+  cx.fillStyle="#1a0a2e";cx.fillRect(CHASE_DOOR.x,CHASE_DOOR.y,CHASE_DOOR.w,CHASE_DOOR.h);
+  cx.strokeStyle="#7c3aed";cx.lineWidth=2;cx.strokeRect(CHASE_DOOR.x,CHASE_DOOR.y,CHASE_DOOR.w,CHASE_DOOR.h);
+  cx.fillStyle="#a78bfa";cx.font="bold 11px sans-serif";cx.textAlign="center";
+  cx.fillText("드랍 신청",CHASE_DOOR.x+CHASE_DOOR.w/3,CHASE_DOOR.y-6);
+  cx.textAlign="left";
+
+  // 교수
+  if(PROF_CHASE_ACTIVE)drawProf();
+
+  // 플레이어
+  drawChar(PL.x,PL.y,selectedChar,PL.dir,PL.frame);
+  drawDog(PL.x+(PL.dir===1?-30:55),PL.y+28,CHARS.indexOf(selectedChar),0.10);
+
+  // 타이머 (중앙 상단)
+  const timeLeft=Math.max(0,chaseTimer);
+  const timerColor=timeLeft>10?"#86efac":timeLeft>5?"#fde68a":"#f87171";
+  cx.fillStyle="rgba(0,0,0,.7)";cx.beginPath();cx.roundRect(W/2-60,8,120,34,6);cx.fill();
+  cx.fillStyle=timerColor;cx.font="bold 20px sans-serif";cx.textAlign="center";
+  cx.fillText(`⏱ ${timeLeft.toFixed(1)}초`,W/2,30);
+  cx.textAlign="left";
+
+  // 추격 안내문 (중앙 NPC 대화창 스타일)
+  drawChaseWarning();
+}
+
+/* ══════ 씬 그리기 ══════ */
+function drawTitle(dt){
+  titleT+=dt;
+  const grad=cx.createLinearGradient(0,0,0,H);
+  grad.addColorStop(0,"#0a0014");grad.addColorStop(1,"#1a0035");
+  cx.fillStyle=grad;cx.fillRect(0,0,W,H);
+  for(let i=0;i<80;i++){
+    const sx=(Math.sin(i*137.5+titleT*.2)*.5+.5)*W;
+    const sy=(Math.cos(i*97.3+titleT*.15)*.5+.5)*H;
+    cx.fillStyle=`rgba(255,255,255,${.1+.2*Math.sin(i+titleT*2)})`;
+    cx.beginPath();cx.arc(sx,sy,.8+Math.sin(i)*0.4,0,Math.PI*2);cx.fill();
+  }
+  cx.textAlign="center";
+  cx.fillStyle="#c084fc";cx.font="bold 42px sans-serif";cx.fillText("조사방법론",W/2,H/2-100);
+  cx.fillStyle="#fde68a";cx.font="bold 26px sans-serif";cx.fillText("GSPA",W/2,H/2-54);
+  cx.fillStyle="#64748b";cx.font="15px sans-serif";
+  cx.fillText("10조 발표 질적연구 - 과정",W/2,H/2-18);
+  cx.globalAlpha=.5+.5*Math.sin(titleT*2.5);
+  cx.fillStyle="#e2e8f0";cx.font="bold 19px sans-serif";cx.fillText("[ Space ] 시작",W/2,H/2+36);
+  cx.globalAlpha=1;
+  cx.fillStyle="#334155";cx.font="15px sans-serif";
+  cx.fillText("방향키: 이동/점프  |  Space: 상호작용/선택",W/2,H/2+76);
+  cx.textAlign="left";
+}
+
+function drawCharSelect(){
+  cx.fillStyle="#0d0d20";cx.fillRect(0,0,W,H);
+  cx.textAlign="center";
+  cx.fillStyle="#93c5fd";cx.font="bold 24px sans-serif";cx.fillText("캐릭터 선택",W/2,60);
+  cx.fillStyle="#64748b";cx.font="13px sans-serif";cx.fillText("[↑] 변경   [Space] 선택",W/2,90);
+
+  CHARS.forEach((ch,i)=>{
+    const bx=W/2-340+i*230,by=150;
+    const sel=(i===charIdx);
+    cx.fillStyle=sel?"rgba(167,139,250,.2)":"rgba(30,41,59,.5)";
+    cx.beginPath();cx.roundRect(bx,by,200,260,10);cx.fill();
+    cx.strokeStyle=sel?"#a78bfa":"#334155";cx.lineWidth=sel?3:1.5;
+    cx.beginPath();cx.roundRect(bx,by,200,260,10);cx.stroke();
+
+    // 캐릭터 (위로 올림: by+20)
+    drawChar(bx+52,by+20,ch,1,0,2);
+
+    // 강아지 그리기
+    drawDog(bx+130,by+85,i);
+
+    // 이름 (캐릭터 아래)
+    cx.fillStyle=sel?"#fde68a":"#94a3b8";
+    cx.font=`bold ${sel?18:15}px sans-serif`;
+    cx.fillText(ch.name,bx+100,by+152);
+
+    // 설명
+    cx.fillStyle="#64748b";cx.font="12px sans-serif";
+    const dlines=ch.desc.match(/.{1,14}/g)||[ch.desc];
+    dlines.forEach((l,li)=>cx.fillText(l,bx+100,by+174+li*16));
+
+    if(sel){
+      cx.fillStyle="#a78bfa";cx.font="bold 14px sans-serif";
+      cx.fillText("▶ 선택됨",bx+100,by+242);
+    }
+  });
+  cx.textAlign="left";
+}
+
+//강아지 그리기
+function drawDog(x,y,charIdx){
+  const bodyColor=charIdx===0?"#f0ece8":charIdx===1?"#c8945a":"#7a4e2a";
+  const earColor=charIdx===0?"#e0d8d0":charIdx===1?"#a87040":"#5a3418";
+  const noseColor="#2d1a0e";
+
+  cx.save();
+  cx.translate(x,y);
+
+  // 꼬리
+  cx.fillStyle=bodyColor;
+  cx.beginPath();cx.ellipse(18,2,5,3,Math.PI/4,0,Math.PI*2);cx.fill();
+
+  // 몸통
+  cx.fillStyle=bodyColor;
+  cx.beginPath();cx.ellipse(3,4,14,10,0,0,Math.PI*2);cx.fill();
+
+  // 다리 4개
+  cx.fillStyle=bodyColor;
+  cx.fillRect(-10,10,5,8);
+  cx.fillRect(-3,10,5,8);
+  cx.fillRect(4,10,5,8);
+  cx.fillRect(11,10,5,8);
+
+  // 머리 (몸통보다 먼저 그려서 귀가 머리 뒤로)
+  // 귀 (머리 위 양쪽, 얼굴 안 가림)
+  cx.fillStyle=earColor;
+  cx.beginPath();cx.ellipse(-18,0,4,7,Math.PI*0.1,0,Math.PI*2);cx.fill();
+  cx.beginPath();cx.ellipse(-6,-7,4,7,Math.PI*0.1,0,Math.PI*2);cx.fill();
+
+  // 머리 (귀 위에 덮어서 얼굴 가림 방지)
+  cx.fillStyle=bodyColor;
+  cx.beginPath();cx.arc(-12,0,9,0,Math.PI*2);cx.fill();
+
+  // 눈 두 개 다 보이게
+  cx.fillStyle="#2d1a0e";
+  cx.beginPath();cx.arc(-16,0,1.8,0,Math.PI*2);cx.fill();
+  cx.beginPath();cx.arc(-9,0,1.8,0,Math.PI*2);cx.fill();
+  // 눈 하이라이트
+  cx.fillStyle="white";
+  cx.beginPath();cx.arc(-15.3,-0.5,0.7,0,Math.PI*2);cx.fill();
+  cx.beginPath();cx.arc(-8.3,-0.5,0.7,0,Math.PI*2);cx.fill();
+
+  // 코
+  cx.fillStyle=noseColor;
+  cx.beginPath();cx.ellipse(-12,3,2.5,2,0,0,Math.PI*2);cx.fill();
+
+  // 입
+  cx.strokeStyle=noseColor;cx.lineWidth=1;
+  cx.beginPath();cx.moveTo(-12,5);cx.lineTo(-14,7);cx.stroke();
+  cx.beginPath();cx.moveTo(-12,5);cx.lineTo(-10,7);cx.stroke();
+
+  cx.restore();
+}
+
+function drawGameScene(dt){
+  const map=getMap();
+  drawMapBg(map);
+  drawPortals(map);
+  if(map.npcs){
+    for(const npc of map.npcs){
+      const hi=overlapNPC(npc)&&!dialog.open;
+      drawNPC(npc,hi);
+    }
+  }
+  drawChar(PL.x,PL.y,selectedChar,PL.dir,PL.frame);
+ drawDog(PL.x+(PL.dir===1?-30:55),PL.y+28,CHARS.indexOf(selectedChar),0.10);
+  drawDialog();
+}
+
+  function drawReject(dt){
+  rejectT+=dt;
+  cx.fillStyle="#0a0005";cx.fillRect(0,0,W,H);
+  cx.textAlign="center";
+  cx.fillStyle=`rgba(239,68,68,${Math.min(1,rejectT*2)})`;
+  cx.font="bold 36px sans-serif";cx.fillText("You Rejected!",W/2,H/2-60);
+  cx.fillStyle="#f1f5f9";cx.font="18px sans-serif";
+  cx.fillText("교수님께 잡혔습니다...",W/2,H/2-14);
+  cx.globalAlpha=.5+.5*Math.sin(rejectT*4);
+  cx.fillStyle="#fde68a";cx.font="bold 16px sans-serif";
+  cx.fillText("[ Space ] 재수강 신청하기",W/2,H/2+40);
+  cx.globalAlpha=1;
+  cx.textAlign="left";
+}
+
+/* ══════ 엔딩 화면 ══════ */
+function drawEndingScreen(){
+  cx.fillStyle="#050510";cx.fillRect(0,0,W,H);
+  cx.textAlign="center";
+  for(let i=0;i<60;i++){
+    const sx=(Math.sin(i*137.5+titleT*.1)*.5+.5)*W;
+    const sy=(Math.cos(i*97.3+titleT*.08)*.5+.5)*H;
+    cx.fillStyle=`rgba(255,255,200,${.15+.2*Math.sin(i+titleT*1.5)})`;
+    cx.beginPath();cx.arc(sx,sy,.7+Math.sin(i)*0.3,0,Math.PI*2);cx.fill();
+  }
+  cx.fillStyle="#c084fc";cx.font="bold 48px sans-serif";cx.fillText("✨ 완료!",W/2,H/2-100);
+  cx.fillStyle="#fde68a";cx.font="22px sans-serif";
+  cx.fillText("이주민 예술가들의 목소리를 성공적으로 연구에 담았습니다!",W/2,H/2-48);
+  cx.fillStyle="#94a3b8";cx.font="15px sans-serif";
+  cx.fillText("자료 유형 → 목적표집 → 이론적 표집 → 이론적 포화",W/2,H/2-4);
+  cx.fillStyle="#64748b";cx.font="13px sans-serif";
+  cx.fillText("이 세 가지 판단이 질적 연구의 핵심입니다.",W/2,H/2+28);
+  cx.globalAlpha=.5+.5*Math.sin(titleT*2);
+  cx.fillStyle="#e2e8f0";cx.font="bold 16px sans-serif";
+  cx.fillText("[ F5 ] 처음으로",W/2,H/2+80);
+  cx.globalAlpha=1;
+  cx.textAlign="left";
+}
+
+/* ══════ 리셋 ══════ */
+function resetGame(){
+  Object.keys(state).forEach(k=>state[k]=false);
+  quests.forEach(q=>q.done=false);
+  libraryBad=false;doorAttempt=0;
+  PROF_CHASE_ACTIVE=false;
+  chasePaused=false;
+  chaseTimer=10;
+  profScale=0.7;
+  dialog.open=false;dialog.choices=null;
+  scene="charSelect";charIdx=0;
+  updateQUI();
+  playBGM("모여봐요 조방 - 캐릭터 선택.mp3");  // ← 추가
+}
+
+/* ══════ onSpace / onUp 최종 (기존 선언 덮어쓰기) ══════ */
+// NOTE: 위에서 이미 선언된 onSpace/onUp은 JS 호이스팅 없이
+// 마지막 선언이 이벤트 핸들러에서 호출되므로, keydown 핸들러의
+// onSpace/onUp 참조가 최신 함수를 가리키도록 window에 등록합니다.
+window._onSpace=function(){
+  if(scene==="ending_screen"){resetGame();return;}
+  if(scene==="title"){scene="charSelect";playBGM("모여봐요 조방 - 캐릭터 선택.mp3");return;}
+  if(scene==="charSelect"){selectedChar=CHARS[charIdx];scene="game";initGame();return;}
+  if(scene==="reject"){resetGame();return;}
+  if(scene==="drop"){return;}
+  if(scene==="chase"){
+    if(chasePaused){chasePaused=false;return;}
+    return;
+  }
+  if(scene==="game"||scene==="ending_dlg"){
+    if(dialog.open){
+      if(dialog.choices)pickChoice(dialog.choices[choiceIdx].fn);
+      else dlgNext();
+    }else{
+      tryInteract();
+    }
+  }
+};
+window._onUp=function(){
+  if(scene==="charSelect"){charIdx=(charIdx+1)%CHARS.length;return;}
+  if(scene==="game"){
+    if(!dialog.open&&tryPortal())return;
+    if(PL.onGround){PL.vy=JUMP;}
+  }
+  if(scene==="chase"){
+    if(!chasePaused&&PROF_CHASE_ACTIVE&&PL.onGround)PL.vy=JUMP;
+  }
+  if(scene==="drop"){
+    if(dropOnGround)dropVY=DROP_JUMP;
+  }
+  if(dialog.open&&dialog.choices)
+    choiceIdx=Math.max(0,choiceIdx-1);
+};
+
+/* ══════ 입력 핸들러 재등록 (최신 함수 참조) ══════ */
+window.removeEventListener("keydown",window._keydownHandler);
+window._keydownHandler=function(e){
+  K[e.key]=true;
+  if(["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"," "].includes(e.key))e.preventDefault();
+  if(e.key===" "&&!spaceConsumed){spaceConsumed=true;window._onSpace();}
+  if(e.key==="ArrowUp"&&!upConsumed){upConsumed=true;window._onUp();}
+  if(e.key==="ArrowDown"&&dialog.open&&dialog.choices)
+    choiceIdx=Math.min(dialog.choices.length-1,choiceIdx+1);
+};
+window.addEventListener("keydown",window._keydownHandler);
+
+
+/* ══════ 메인 루프 ══════ */
+let lastTime=0;
+function loop(ts){
+pendingBGM = "모여봐요 조방 - 캐릭터 선택.mp3";
+  requestAnimationFrame(loop);
+  const dt=Math.min((ts-lastTime)/1000,0.05);
+  lastTime=ts;
+  titleT+=dt;
+  cx.clearRect(0,0,W,H);
+
+  if(scene==="title"){
+    drawTitle(dt);
+  }else if(scene==="charSelect"){
+    drawCharSelect();
+  }else if(scene==="game"){
+    updateGame(dt);
+    drawGameScene(dt);
+  }else if(scene==="chase"){
+    updateChase(dt);
+    drawChaseScene();
+  }else if(scene==="drop"){
+    updateDrop(dt);
+    drawDropScene();
+  }else if(scene==="reject"){
+    drawReject(dt);
+  }else if(scene==="ending_dlg"){
+    // 대화 끝나면 onEnd에서 scene="ending_screen" 설정됨
+    drawGameScene(dt);
+  }else if(scene==="ending_screen"){
+    drawEndingScreen();
+  }
+}
+
+/* ══════ 초기화 ══════ */
+updateQUI();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
