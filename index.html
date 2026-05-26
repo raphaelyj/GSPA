@@ -284,7 +284,7 @@ boards:[
 };
 
 let currentMap="corridor";
-function getMap(){return MAPS[currentMap];}
+function getMap(){ MAPS[currentMap];}
 
 /* ══════ 대화 ══════ */
 const dialog={open:false,lines:[],idx:0,choices:null,speaker:"",text:""};
@@ -300,9 +300,9 @@ function openDialog(lines){
 function dlgNext(){
   const cur=dialog.lines[dialog.idx];
   if(cur?.onEnd)cur.onEnd();
-  if(dialog.choices)return;
+  if(dialog.choices);
   dialog.idx++;
-  if(dialog.idx>=dialog.lines.length){dialog.open=false;dialog.choices=null;return;}
+  if(dialog.idx>=dialog.lines.length){dialog.open=false;dialog.choices=null;;}
   const n=dialog.lines[dialog.idx];
   dialog.speaker=n.speaker??"";dialog.text=n.text??"";
   dialog.choices=n.choices??null;choiceIdx=0;
@@ -311,7 +311,7 @@ function pickChoice(fn){dialog.open=false;dialog.choices=null;fn();}
 
 //* ══════ 스페이스 / 위 키 핸들러 ══════ */
 function onSpace(){
-  if(scene==="title"){scene="charSelect";return;}
+  if(scene==="title"){scene="charSelect";;}
   if(scene==="charSelect"){
     if(charIdx===1){
       alert("양적연구로 변절한 연구자입니다.");
@@ -349,7 +349,6 @@ if(scene==="chase"){
     return;
   }
 
-}
 function onUp(){
   if(scene==="charSelect"){charIdx=(charIdx+1)%CHARS.length;return;}
   if(scene==="game"){
