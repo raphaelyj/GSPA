@@ -70,23 +70,23 @@ function playBGM(src){
 const cv=document.getElementById("c"),cx=cv.getContext("2d");
 const W=820,H=500;
 
-  // ===== 엔딩 크레딧 텍스트 =====
 const CREDITS = [
   "만든 사람",
-  "  기획 / 연출 : 10조",
-  "  프로그래밍 : 김용진",
-  "  스토리 / 텍스트 : 이유현",
+  "",
+  "  조사방법론 10조",
+  "  (김용진 / 김유미 / 이유현) ",
+  "",
   "",
   "감사한 분들",
-  "  지도교수 : 김병조 교수님",
-  "  참여 이주민 예술가 분들",
   "",
+  "김병조 교수님",
+  "조사방법론 조교님",
+  "참여해 주신 모든 분들",
   "플레이해 주셔서 감사합니다."
 ];
 
-let creditsOffsetY = 240;  // 엔딩 텍스트 아래에서 시작하는 Y좌표
+let creditsOffsetY = H + 40;  // 엔딩 텍스트 아래에서 시작하는 Y좌표
 
-  
 /* ══════ 입력 ══════ */
 const K={};
 let spaceConsumed=false,upConsumed=false;
@@ -659,10 +659,8 @@ const T={
     {speaker:"내레이션",text:"유미는 끝내 연구를 포기하지 않았다."},
     {speaker:"내레이션",text:"이주민 예술가들의 경험을 자료로 모으고, 누구를 만날지 선택하고, 이론이 요구하는 사람을 다시 찾아가고, 더 이상 새로운 개념이 나오지 않는 순간까지 버텨냈다."},
     {speaker:"내레이션",text:"이제 남은 건 그 목소리들을 논문으로 정리해 한국 사회가 보지 못했던 제도적 공백을 드러내는 일이다."},
-    {speaker:"내레이션",text:"✨ The End",onEnd: ()=>{
-  creditsOffsetY = 240; 
-  scene = "ending_screen";
-}
+    {speaker:"내레이션",text:"✨ The End",
+    onEnd:()=>{creditsOffsetY = H + 40; scene="ending_screen";}}
   ]
 };
 
@@ -1567,27 +1565,31 @@ function drawEndingScreen(){
   cx.fillStyle="#e2e8f0";cx.font="bold 16px sans-serif";
   cx.fillText("[ F5 ] 처음으로",W/2,H/2+80);
   cx.globalAlpha=1;
- // ====== 여기부터 크레딧 추가 ======
+  // ====== 여기부터 크레딧 추가 ======
   cx.save();
   cx.textAlign = "center";
   cx.fillStyle = "#e5e7eb";
   cx.font = "14px sans-serif";
 
   const lineHeight = 22;
-  CREDITS.forEach((line, i) => {
+  const creditsTopLimit = H/2 + 100;   // [F5] 밑 20px 정도부터
+ CREDITS.forEach((line, i) => {
     const y = creditsOffsetY + i * lineHeight;
-    cx.fillText(line, W/2, y);
+    if (y >= creditsTopLimit && y <= H + 40) {
+      // F5 아래 ~ 화면 조금 아래까지만 그리기
+      cx.fillText(line, W/2, y);
+    }
   });
 
   cx.restore();
 
   // 위로 천천히 스크롤
-  creditsOffsetY -= 20 * (1/60);  // 프레임당 약 0.33픽셀 (초당 20px 느낌)
+  creditsOffsetY -= 20 * (1/60);  // 속도는 원래 쓰던 값 그대로
   // ====== 크레딧 끝 ======
 
   cx.textAlign="left";
 }
-  
+
 /* ══════ 리셋 ══════ */
 function resetGame(){
   Object.keys(state).forEach(k=>state[k]=false);
