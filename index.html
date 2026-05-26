@@ -131,9 +131,9 @@ const PROF={x:-60,y:0,vx:0,vy:0,w:36,h:72,onGround:false,speed:115};
 let profScale=0.7; // 교수 크기 배율 (처음 크다가 점점 작아짐)
 
 /* ══════ 추격전 타이머 ══════ */
-let chaseTimer=0;
-let PROF_CHASE_ACTIVE=false;
-let chasePhase=0;
+let Timer=0;
+let PROF__ACTIVE=false;
+let Phase=0;
 // 추격전 안내 일시정지
 let chasePaused=false;
 let chaseWarningMsg="🚨교수님으로 부터 도망치세요🚨";
@@ -335,8 +335,7 @@ function onSpace(){
     }else{
       tryInteract();
     }
-  }
- if(scene==="chase"){
+if(scene==="chase"){
     if (chaseJustStarted) {
       // 대사에서 넘어온 Space 입력 한 번은 무시
       chaseJustStarted = false;
@@ -349,6 +348,7 @@ function onSpace(){
     }
     return;
   }
+
 }
 function onUp(){
   if(scene==="charSelect"){charIdx=(charIdx+1)%CHARS.length;return;}
