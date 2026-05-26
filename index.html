@@ -715,6 +715,7 @@ function startChase(){
   chaseWarningMsg="🚨 교수님이 실망하셨습니다. 최대한 빨리 도망치세요. 🚨";
   scene="chase";
   chaseTimer=25.0; // 20초
+  chaseJustStarted = true;
   profScale=2.0;   // 처음에 크게
   chasePhase=0;
   PROF.x=-700;PROF.y=GROUND_Y-80;PROF.vx=0;PROF.vy=0;PROF.onGround=false;
@@ -1568,10 +1569,19 @@ window._onSpace=function(){
   if(scene==="charSelect"){selectedChar=CHARS[charIdx];scene="game";initGame();return;}
   if(scene==="reject"){resetGame();return;}
   if(scene==="drop"){return;}
-  if(scene==="chase"){
-    if(chasePaused){chasePaused=false;return;}
+if(scene==="chase"){
+  if(chaseJustStarted){
+    // 대사에서 쓰던 Space 입력은 무시하고,
+    // 추격 시작 후 새로 누른 Space부터 안내창을 닫게 함
+    chaseJustStarted = false;
     return;
   }
+  if(chasePaused){
+    chasePaused=false;
+    return;
+  }
+  return;
+}
   if(scene==="game"||scene==="ending_dlg"){
     if(dialog.open){
       if(dialog.choices)pickChoice(dialog.choices[choiceIdx].fn);
