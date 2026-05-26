@@ -84,7 +84,7 @@ window.addEventListener("keydown",e=>{
 }
   K[e.key]=true;
   if(["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"," "].includes(e.key))e.preventDefault();
-  if(e.key===" "&&!spaceConsumed){spaceConsumed=true;onSpace();}
+  if(e.key===" "&&!spaceConsumed){spaceConsumed=true;();}
   if(e.key==="ArrowUp"&&!upConsumed){upConsumed=true;onUp();}
   if(e.key==="ArrowDown"&&dialog.open&&dialog.choices)
     choiceIdx=Math.min(dialog.choices.length-1,choiceIdx+1);
@@ -336,12 +336,18 @@ function onSpace(){
       tryInteract();
     }
   }
-  if(scene==="chase"){
-    // 추격전 중 안내 대화창 닫기
-    if(chasePaused){
-      chasePaused=false;
+ if(scene==="chase"){
+    if (chaseJustStarted) {
+      // 대사에서 넘어온 Space 입력 한 번은 무시
+      chaseJustStarted = false;
       return;
     }
+    if (chasePaused) {
+      // 안내창 떠 있을 때, 그 다음 Space부터 닫기
+      chasePaused = false;
+      return;
+    }
+    return;
   }
 }
 function onUp(){
