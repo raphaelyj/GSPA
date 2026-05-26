@@ -84,7 +84,7 @@ window.addEventListener("keydown",e=>{
 }
   K[e.key]=true;
   if(["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"," "].includes(e.key))e.preventDefault();
-  if(e.key===" "&&!spaceConsumed){spaceConsumed=true;();}
+  if(e.key===" "&&!spaceConsumed){spaceConsumed=true;onSpace();}
   if(e.key==="ArrowUp"&&!upConsumed){upConsumed=true;onUp();}
   if(e.key==="ArrowDown"&&dialog.open&&dialog.choices)
     choiceIdx=Math.min(dialog.choices.length-1,choiceIdx+1);
@@ -131,9 +131,9 @@ const PROF={x:-60,y:0,vx:0,vy:0,w:36,h:72,onGround:false,speed:115};
 let profScale=0.7; // 교수 크기 배율 (처음 크다가 점점 작아짐)
 
 /* ══════ 추격전 타이머 ══════ */
-let Timer=0;
-let PROF__ACTIVE=false;
-let Phase=0;
+let chaseTimer=0;
+let PROF_CHASE_ACTIVE=false;
+let chasePhase=0;
 // 추격전 안내 일시정지
 let chasePaused=false;
 let chaseWarningMsg="🚨교수님으로 부터 도망치세요🚨";
@@ -284,7 +284,7 @@ boards:[
 };
 
 let currentMap="corridor";
-function getMap(){ MAPS[currentMap];}
+function getMap(){return MAPS[currentMap];}
 
 /* ══════ 대화 ══════ */
 const dialog={open:false,lines:[],idx:0,choices:null,speaker:"",text:""};
@@ -300,9 +300,9 @@ function openDialog(lines){
 function dlgNext(){
   const cur=dialog.lines[dialog.idx];
   if(cur?.onEnd)cur.onEnd();
-  if(dialog.choices);
+  if(dialog.choices)return;
   dialog.idx++;
-  if(dialog.idx>=dialog.lines.length){dialog.open=false;dialog.choices=null;;}
+  if(dialog.idx>=dialog.lines.length){dialog.open=false;dialog.choices=null;return;}
   const n=dialog.lines[dialog.idx];
   dialog.speaker=n.speaker??"";dialog.text=n.text??"";
   dialog.choices=n.choices??null;choiceIdx=0;
@@ -311,7 +311,7 @@ function pickChoice(fn){dialog.open=false;dialog.choices=null;fn();}
 
 //* ══════ 스페이스 / 위 키 핸들러 ══════ */
 function onSpace(){
-  if(scene==="title"){scene="charSelect";;}
+  if(scene==="title"){scene="charSelect";return;}
   if(scene==="charSelect"){
     if(charIdx===1){
       alert("양적연구로 변절한 연구자입니다.");
@@ -335,7 +335,8 @@ function onSpace(){
     }else{
       tryInteract();
     }
-if(scene==="chase"){
+  }
+  if(scene==="chase"){
     if (chaseJustStarted) {
       // 대사에서 넘어온 Space 입력 한 번은 무시
       chaseJustStarted = false;
@@ -348,7 +349,7 @@ if(scene==="chase"){
     }
     return;
   }
-
+}
 function onUp(){
   if(scene==="charSelect"){charIdx=(charIdx+1)%CHARS.length;return;}
   if(scene==="game"){
@@ -720,7 +721,7 @@ function startChase(){
   chaseWarningMsg="🚨 교수님이 실망하셨습니다. 최대한 빨리 도망치세요. 🚨";
   scene="chase";
   chaseTimer=25.0; // 20초
-  chaseJustStarted = true;
+   chaseJustStarted = true; 
   profScale=2.0;   // 처음에 크게
   chasePhase=0;
   PROF.x=-700;PROF.y=GROUND_Y-80;PROF.vx=0;PROF.vy=0;PROF.onGround=false;
@@ -1574,7 +1575,7 @@ window._onSpace=function(){
   if(scene==="charSelect"){selectedChar=CHARS[charIdx];scene="game";initGame();return;}
   if(scene==="reject"){resetGame();return;}
   if(scene==="drop"){return;}
-if(scene==="chase"){
+  if(scene==="chase"){
   if(chaseJustStarted){
     // 대사에서 쓰던 Space 입력은 무시하고,
     // 추격 시작 후 새로 누른 Space부터 안내창을 닫게 함
@@ -1587,6 +1588,7 @@ if(scene==="chase"){
   }
   return;
 }
+
   if(scene==="game"||scene==="ending_dlg"){
     if(dialog.open){
       if(dialog.choices)pickChoice(dialog.choices[choiceIdx].fn);
